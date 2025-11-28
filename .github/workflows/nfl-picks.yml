@@ -1,7 +1,12 @@
 name: Weekly NFL Picks
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ignore_start_gate:
+        description: "Set to true to bypass the start-date gate (for manual tests)"
+        required: false
+        default: "false"
   schedule:
     # 8:00 AM US/Eastern every Friday
     - cron: "0 13 * * 5"
@@ -27,17 +32,22 @@ jobs:
 
       - name: Gate until 2025-12-05 08:00 ET
         id: gate
+        env:
+          IGNORE_START_GATE: ${{ github.event.inputs.ignore_start_gate || 'false' }}
         run: |
           python - <<'PY'
           import datetime as dt, zoneinfo, os
           ET = zoneinfo.ZoneInfo("America/New_York")
           now = dt.datetime.now(ET)
           start = dt.datetime(2025, 12, 5, 8, 0, tzinfo=ET)
-          skip = now < start
+          ignore = os.environ.get("IGNORE_START_GATE", "").lower() == "true"
+          skip = False if ignore else now < start
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"skip={str(skip).lower()}\n")
           if skip:
               print(f"::notice::Not time yet (now {now}); skipping run.")
+          else:
+              print(f"Proceeding (ignore_start_gate={ignore}).")
           PY
 
       - name: Install dependencies
