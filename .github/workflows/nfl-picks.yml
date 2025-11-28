@@ -1,0 +1,110 @@
+name: Weekly NFL Picks
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # 8:00 AM US/Eastern every Friday
+    - cron: "0 13 * * 5"
+      timezone: "America/New_York"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      SEASON: "2025"
+      FTN_USER_ID: ${{ secrets.FTN_USER_ID }}
+      FTN_PASSWORD: ${{ secrets.FTN_PASSWORD }}
+      FTN_KEY: ${{ secrets.FTN_KEY }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Gate until 2025-12-05 08:00 ET
+        id: gate
+        run: |
+          python - <<'PY'
+          import datetime as dt, zoneinfo, os
+          ET = zoneinfo.ZoneInfo("America/New_York")
+          now = dt.datetime.now(ET)
+          start = dt.datetime(2025, 12, 5, 8, 0, tzinfo=ET)
+          skip = now < start
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"skip={str(skip).lower()}\n")
+          if skip:
+              print(f"::notice::Not time yet (now {now}); skipping run.")
+          PY
+
+      - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Determine upcoming week
+        if: steps.gate.outputs.skip != 'true'
+        id: week
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          SCOREBOARD_URL = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+          season = int(os.environ.get("SEASON", "2025"))
+          next_week = None
+
+          for wk in range(1, 19):
+              try:
+                  resp = requests.get(
+                      SCOREBOARD_URL,
+                      params={"dates": season, "seasontype": 2, "week": wk},
+                      timeout=20,
+                  )
+                  resp.raise_for_status()
+                  data = resp.json()
+              except Exception as exc:  # pylint: disable=broad-except
+                  print(f"::warning::Failed to fetch week {wk} scoreboard: {exc}")
+                  continue
+
+              events = data.get("events") or []
+              if not events:
+                  continue
+
+              states = [
+                  (ev.get("status") or {}).get("type", {}).get("state")
+                  for ev in events
+              ]
+              if any(state != "post" for state in states if state):
+                  next_week = wk
+                  break
+
+          if next_week is None:
+              print("::warning::No upcoming week detected; defaulting to 18.")
+              next_week = 18
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"week={next_week}\n")
+          print(f"Using week {next_week} for season {season}.")
+          PY
+
+      - name: Run picks and submit
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          WDM_LOG_LEVEL: 0
+        run: |
+          python nfl_picks.py ${{ steps.week.outputs.week }} \
+            --season "$SEASON" \
+            --odds-provider the-odds-api \
+            --odds-api-key "$ODDS_API_KEY" \
+            --login-id "$FTN_USER_ID" \
+            --login-password "$FTN_PASSWORD" \
+            --login-key "$FTN_KEY" \
+            --compare-existing \
+            --submit \
+            --non-interactive \
+            --selenium-browser chrome
