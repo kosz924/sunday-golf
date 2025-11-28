@@ -1,0 +1,1 @@
+python3 nfl_picks.py 5     --odds-provider the-odds-api     --odds-api-key 26a4e2488f702352da162e4cf51a9f24     --login-id kjk711     --login-password ken1279     --login-key g3cyq7dllb     --compare-existing     --submit
