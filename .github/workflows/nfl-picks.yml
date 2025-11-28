@@ -34,6 +34,7 @@ jobs:
         id: gate
         env:
           IGNORE_START_GATE: ${{ github.event.inputs.ignore_start_gate || 'false' }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           python - <<'PY'
           import datetime as dt, zoneinfo, os
@@ -41,13 +42,19 @@ jobs:
           now = dt.datetime.now(ET)
           start = dt.datetime(2025, 12, 5, 8, 0, tzinfo=ET)
           ignore = os.environ.get("IGNORE_START_GATE", "").lower() == "true"
-          skip = False if ignore else now < start
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+
+          # Only enforce the start-date gate for scheduled runs; manual runs always proceed.
+          if event_name == "schedule" and (now < start) and not ignore:
+              skip = True
+              reason = f"Not time yet (now {now}); scheduled runs begin at {start}."
+          else:
+              skip = False
+              reason = f"Proceeding (ignore_start_gate={ignore}, event={event_name}, now={now})."
+
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"skip={str(skip).lower()}\n")
-          if skip:
-              print(f"::notice::Not time yet (now {now}); skipping run.")
-          else:
-              print(f"Proceeding (ignore_start_gate={ignore}).")
+          print(f"::notice::{reason}")
           PY
 
       - name: Install dependencies
