@@ -98,3 +98,13 @@ Mix and match flags depending on whether you need a quick summary, a manual twea
 - The Monday tie-breaker uses all Monday games’ totals; halves round up (e.g., 89.5 → 90). You can override before submitting.
 - The Selenium submitter attempts to fill confidence fields if present; otherwise it leaves the table’s existing numbers.
 - Always verify the FantasyTeamsNetwork entry after submission in case the site layout changes.
+
+## GitHub Actions Automation
+
+A workflow (`.github/workflows/nfl-picks.yml`) runs the script every Friday at 8:00 AM US/Eastern starting 2025-12-05 and submits the upcoming week’s picks using headless Chrome. To enable it:
+
+1) Add repository secrets: `FTN_USER_ID`, `FTN_PASSWORD`, `FTN_KEY`, `ODDS_API_KEY`.  
+2) Push the branch to GitHub and allow Actions on the repo.  
+3) Optional: trigger a manual test run via the “Run workflow” button (uses the same command as cron).
+
+The workflow installs dependencies and calls `python nfl_picks.py <upcoming-week> --submit --non-interactive ...` so local usage stays unchanged.
