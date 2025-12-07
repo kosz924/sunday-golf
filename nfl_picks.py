@@ -15,6 +15,7 @@ import datetime as dt
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from getpass import getpass
+import json
 import logging
 import os
 import random
@@ -56,6 +57,7 @@ class GameOdds:
     over_under: Optional[float]
     provider: str
     favorite_side: str  # "home" or "away"
+    favorite_probability: Optional[float] = None  # Moneyline implied probability for favorite (0-1)
 
 
 @dataclass
@@ -119,6 +121,9 @@ class Pick:
         return self.selected_competitor is self.game.home
 
     def spread_label(self) -> str:
+        prob = self.game.odds.favorite_probability
+        if prob is not None:
+            return f"{prob * 100:.1f}%"
         spread = self.game.spread_magnitude
         if self.selection == "favorite":
             return f"-{spread:g}"
@@ -258,9 +263,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--odds-provider",
-        choices=["espn", "the-odds-api"],
+        choices=["espn", "the-odds-api", "polymarket"],
         default="espn",
-        help="Source for odds data (default: espn).",
+        help="Source for odds data (default: espn). Use 'polymarket' for moneyline percentages.",
     )
     parser.add_argument(
         "--odds-api-key",
@@ -418,7 +423,7 @@ def parse_games(
         if not home or not away:
             continue
 
-        if odds_source == "the-odds-api":
+        if odds_source in {"the-odds-api", "polymarket"}:
             display_home = home["team"].get("displayName", "")
             display_away = away["team"].get("displayName", "")
             home_norm = normalize_team_name(display_home)
@@ -432,6 +437,7 @@ def parse_games(
                         over_under=odds.over_under,
                         provider=odds.provider,
                         favorite_side="away" if odds.favorite_side == "home" else "home",
+                        favorite_probability=odds.favorite_probability,
                     )
             if not odds:
                 logging.warning(
@@ -482,12 +488,17 @@ def assign_points(games: List[Game], max_points: int, seed: Optional[int]) -> Li
 
     shuffled = games[:]
     random.shuffle(shuffled)
+
+    def ranking_key(game: Game) -> Tuple[float, float, int]:
+        probability = game.odds.favorite_probability
+        prob_key = probability if probability is not None else -1.0
+        spread_key = 0.0 if probability is not None else game.spread_magnitude
+        home_flag = 1 if game.favorite is game.home else 0
+        return (prob_key, spread_key, home_flag)
+
     sorted_games = sorted(
         shuffled,
-        key=lambda g: (
-            g.spread_magnitude,
-            1 if g.favorite is g.home else 0,
-        ),
+        key=ranking_key,
         reverse=True,
     )
 
@@ -632,7 +643,7 @@ def render_pick_table(picks: List[Pick]) -> str:
     if not picks:
         return "No games available after filtering."
 
-    header = f"{'Idx':>3}  {'Pts':>3}  {'Pick (spread)':<40}  {'Opponent':<30}  {'Kickoff (ET)':<18}  {'O/U':>5}  Provider"
+    header = f"{'Idx':>3}  {'Pts':>3}  {'Pick (spread/prob)':<40}  {'Opponent':<30}  {'Kickoff (ET)':<18}  {'O/U':>5}  Provider"
     lines = [header, "-" * len(header)]
 
     for idx, pick in enumerate(picks, start=1):
@@ -1030,6 +1041,162 @@ def build_the_odds_api_lookup(
                 )
 
     return lookup
+
+
+def build_polymarket_lookup(
+    events_info: List[Dict[str, Any]],
+    *,
+    session: requests.Session,
+    tag_id: int = 450,
+) -> Dict[Tuple[str, str], GameOdds]:
+    """Build a lookup of GameOdds keyed by normalized (home, away) from Polymarket moneyline polls."""
+    if not events_info:
+        return {}
+
+    params = {
+        "tag_id": tag_id,
+        "active": "true",
+        "closed": "false",
+        "sort": "volume",
+        "limit": 200,
+    }
+    try:
+        response = session.get("https://gamma-api.polymarket.com/events", params=params, timeout=15)
+        response.raise_for_status()
+        events = response.json()
+    except requests.RequestException as exc:
+        logging.error("Polymarket request failed: %s", exc)
+        raise
+
+    def parse_list(value: Any) -> List[Any]:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:  # pylint: disable=broad-except
+                return []
+        return []
+
+    candidate_markets: List[Dict[str, Any]] = []
+    for event in events:
+        for market in event.get("markets") or []:
+            question = market.get("question") or ""
+            if " vs " not in question and " vs. " not in question:
+                continue
+            if ":" in question:
+                continue  # filter out spread/total/player props
+
+            prices_raw = parse_list(market.get("outcomePrices"))
+            names_raw = parse_list(market.get("outcomes"))
+            if len(prices_raw) < 2 or len(names_raw) < 2:
+                continue
+
+            try:
+                probabilities = [float(p) for p in prices_raw[:2]]
+            except (TypeError, ValueError):
+                continue
+
+            names = [str(n) for n in names_raw[:2]]
+            if not names[0] or not names[1]:
+                continue
+
+            team_a_aliases = aliases_from_label(names[0])
+            team_b_aliases = aliases_from_label(names[1])
+            if not team_a_aliases or not team_b_aliases:
+                continue
+
+            candidate_markets.append(
+                {
+                    "names": names,
+                    "probabilities": probabilities,
+                    "team_a_aliases": team_a_aliases,
+                    "team_b_aliases": team_b_aliases,
+                    "question": question,
+                }
+            )
+
+    if not candidate_markets:
+        logging.warning("No Polymarket moneyline markets found.")
+        return {}
+
+    lookup: Dict[Tuple[str, str], GameOdds] = {}
+
+    for info in events_info:
+        home_team = info["home"]["team"]
+        away_team = info["away"]["team"]
+        home_aliases = set(generate_team_aliases(home_team)) | aliases_from_label(home_team.get("displayName", ""))
+        away_aliases = set(generate_team_aliases(away_team)) | aliases_from_label(away_team.get("displayName", ""))
+
+        matched: Optional[Dict[str, Any]] = None
+        swapped = False
+        for market in candidate_markets:
+            if home_aliases & market["team_a_aliases"] and away_aliases & market["team_b_aliases"]:
+                matched = market
+                break
+            if home_aliases & market["team_b_aliases"] and away_aliases & market["team_a_aliases"]:
+                matched = market
+                swapped = True
+                break
+
+        if not matched:
+            continue
+
+        candidate_markets.remove(matched)
+
+        home_prob = matched["probabilities"][0 if not swapped else 1]
+        away_prob = matched["probabilities"][1 if not swapped else 0]
+
+        favorite_side = "home" if home_prob >= away_prob else "away"
+        favorite_probability = max(home_prob, away_prob)
+
+        home_norm = normalize_team_name(home_team.get("displayName", ""))
+        away_norm = normalize_team_name(away_team.get("displayName", ""))
+
+        lookup[(home_norm, away_norm)] = GameOdds(
+            spread=0.0,
+            over_under=None,
+            provider="Polymarket moneyline",
+            favorite_side=favorite_side,
+            favorite_probability=favorite_probability,
+        )
+
+    if not lookup:
+        logging.warning("No Polymarket matchups matched the NFL scoreboard.")
+    return lookup
+
+
+def merge_over_under(
+    primary_lookup: Dict[Tuple[str, str], GameOdds],
+    totals_lookup: Dict[Tuple[str, str], GameOdds],
+) -> Dict[Tuple[str, str], GameOdds]:
+    """Return a lookup where primary entries gain over/under values from totals_lookup when missing."""
+    if not totals_lookup:
+        return primary_lookup
+
+    merged: Dict[Tuple[str, str], GameOdds] = {}
+    for key, odds in primary_lookup.items():
+        over_under_value = odds.over_under
+        if over_under_value is None:
+            total_odds = totals_lookup.get(key)
+            swapped = (key[1], key[0])
+            if total_odds is None:
+                total_odds = totals_lookup.get(swapped)
+            if total_odds and total_odds.over_under is not None:
+                over_under_value = total_odds.over_under
+
+        merged[key] = GameOdds(
+            spread=odds.spread,
+            over_under=over_under_value,
+            provider=odds.provider,
+            favorite_side=odds.favorite_side,
+            favorite_probability=odds.favorite_probability,
+        )
+    return merged
+
+
 def format_monday_summary(summary: MondaySummary, override_pick: Optional[int] = None) -> str:
     if not summary.games:
         return "No Monday game found for tie-breaker."
@@ -1285,7 +1452,10 @@ def summarize_existing_comparison(
         )
     
     if not diffs:
-        return "Existing comparison: site picks already match the computed selections."
+        return (
+            "Existing comparison: site picks match the computed selections "
+            "(winners and confidence points). If you just submitted, this confirms the new ordering was saved."
+        )
 
     return "Existing comparison:\n" + "\n".join(diffs)
 
@@ -1626,6 +1796,38 @@ def main() -> None:
                 logging.warning(
                     "No local fallback odds available; games without markets will default to home team."
                 )
+    elif args.odds_provider == "polymarket":
+        try:
+            odds_lookup = build_polymarket_lookup(
+                events_info,
+                session=session,
+            )
+        except requests.RequestException as exc:
+            logging.error("Polymarket request failed: %s", exc)
+            raise SystemExit("Unable to fetch odds from Polymarket; see logs for details.")
+
+        # Fill missing over/under values with a sportsbook source (Fanduel by default via The Odds API) if available.
+        totals_api_key = args.odds_api_key or os.environ.get("ODDS_API_KEY")
+        if totals_api_key:
+            bookmakers = (
+                [b.strip() for b in args.odds_bookmakers.split(",") if b.strip()]
+                if args.odds_bookmakers
+                else ["fanduel", "draftkings", "betmgm"]
+            )
+            try:
+                totals_lookup = build_the_odds_api_lookup(
+                    events_info,
+                    session=session,
+                    api_key=totals_api_key,
+                    bookmakers=bookmakers,
+                    week=args.week,
+                    fallback_dir=fallback_dir,
+                )
+                odds_lookup = merge_over_under(odds_lookup, totals_lookup)
+            except requests.RequestException as exc:  # pylint: disable=broad-except
+                logging.warning("Unable to fetch totals for Polymarket via The Odds API: %s", exc)
+        else:
+            logging.info("ODDS_API_KEY not set; Polymarket runs will not include O/U for tie-breaker.")
 
     # Reconstruct scoreboard dict for parse_games (it needs the full structure but we also supply odds lookup)
     games = parse_games(

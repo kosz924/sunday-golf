@@ -8,8 +8,8 @@ on:
         required: false
         default: "false"
   schedule:
-    # 8:00 AM US/Eastern every Friday
-    - cron: "0 13 * * 5"
+    # 8:00 AM US/Eastern every Saturday
+    - cron: "0 13 * * 6"
       timezone: "America/New_York"
 
 jobs:
