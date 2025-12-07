@@ -44,7 +44,6 @@ jobs:
           ignore = os.environ.get("IGNORE_START_GATE", "").lower() == "true"
           event_name = os.environ.get("GITHUB_EVENT_NAME", "")
 
-          # Only enforce the start-date gate for scheduled runs; manual runs always proceed.
           if event_name == "schedule" and (now < start) and not ignore:
               skip = True
               reason = f"Not time yet (now {now}); scheduled runs begin at {start}."
@@ -116,7 +115,7 @@ jobs:
         run: |
           python nfl_picks.py ${{ steps.week.outputs.week }} \
             --season "$SEASON" \
-            --odds-provider the-odds-api \
+            --odds-provider polymarket \
             --odds-api-key "$ODDS_API_KEY" \
             --login-id "$FTN_USER_ID" \
             --login-password "$FTN_PASSWORD" \
