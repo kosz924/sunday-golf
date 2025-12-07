@@ -29,6 +29,7 @@ This utility scrapes the ESPN NFL odds scoreboard to auto-create weekly Sunday-o
        ```
      - The script defaults to ESPN odds; switch to The Odds API with `--odds-provider the-odds-api`. This unlocks future-week spreads/totals.
       - If an individual matchup is missing from the API, save the SportsbookReview table to `data/sbr_week<week>.html`; the script will auto-detect it (or point `--sbr-fallback-dir` to another folder).
+      - For moneyline percentages, you can use Polymarket with `--odds-provider polymarket` (no key required). If `ODDS_API_KEY` is set, the script also pulls O/U totals from The Odds API (Fanduel/DK/BM) for tie-breakers.
    ```bash
    export FTN_USER_ID="your_username"
    export FTN_PASSWORD="your_password"
@@ -65,7 +66,7 @@ The core script is `nfl_picks.py`. Typical flow every Friday:
 - `--submit` – auto-submit without prompting (requires credentials).
 - `--compare-existing` – pull the site’s current selections and highlight any differences versus the computed set.
    - `--login-id`, `--login-password`, `--login-key` – supply credentials directly.
-   - `--odds-provider espn|the-odds-api` – choose where the spreads come from.
+   - `--odds-provider espn|the-odds-api|polymarket` – choose where the lines come from (Polymarket ranks by moneyline percentages).
    - `--odds-api-key` – pass The Odds API key inline (falls back to `ODDS_API_KEY`).
    - `--odds-bookmakers fanduel,draftkings,...` – bookmaker preference when using The Odds API.
    - `--sbr-fallback-dir data` – directory containing `sbr_week<week>.html` fallback files (optional).
@@ -89,6 +90,7 @@ The core script is `nfl_picks.py`. Typical flow every Friday:
 | `python3 nfl_picks.py 4 --selenium-no-headless` | Visual run: browser window stays visible during Selenium automation. |
 | `python3 nfl_picks.py 5 --odds-provider the-odds-api` | Generate future-week picks using The Odds API odds (requires key). |
 | `python3 nfl_picks.py 5 --odds-provider the-odds-api --sbr-fallback-dir data` | Same as above, but reads `data/sbr_week5.html` to fill gaps if the API is missing a matchup. |
+| `python3 nfl_picks.py 5 --odds-provider polymarket` | Rank picks by Polymarket moneyline percentages (no API key). If `ODDS_API_KEY` is set, O/U totals come from sportsbook data for tie-breakers. |
 
 Mix and match flags depending on whether you need a quick summary, a manual tweak session, or a hands-off cron-friendly submit.
 
