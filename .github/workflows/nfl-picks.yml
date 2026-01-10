@@ -73,7 +73,8 @@ jobs:
           SCOREBOARD_URL = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
           season = int(os.environ.get("SEASON", "2025"))
           next_week = None
-
+          
+          # 1. Check Regular Season (Weeks 1-18)
           for wk in range(1, 19):
               try:
                   resp = requests.get(
@@ -84,7 +85,7 @@ jobs:
                   resp.raise_for_status()
                   data = resp.json()
               except Exception as exc:  # pylint: disable=broad-except
-                  print(f"::warning::Failed to fetch week {wk} scoreboard: {exc}")
+                  print(f"::warning::Failed to fetch reg week {wk}: {exc}")
                   continue
 
               events = data.get("events") or []
@@ -98,6 +99,35 @@ jobs:
               if any(state != "post" for state in states if state):
                   next_week = wk
                   break
+          
+          # 2. Check Postseason (Weeks 1-5) if no regular season week found
+          # Postseason Week 1 = Script Week 19
+          if next_week is None:
+              print("Regular season complete; checking postseason...")
+              for wk in range(1, 6):
+                  try:
+                      resp = requests.get(
+                          SCOREBOARD_URL,
+                          params={"dates": season, "seasontype": 3, "week": wk},
+                          timeout=20,
+                      )
+                      resp.raise_for_status()
+                      data = resp.json()
+                  except Exception as exc:
+                      print(f"::warning::Failed to fetch post week {wk}: {exc}")
+                      continue
+
+                  events = data.get("events") or []
+                  if not events:
+                      continue
+
+                  states = [
+                      (ev.get("status") or {}).get("type", {}).get("state")
+                      for ev in events
+                  ]
+                  if any(state != "post" for state in states if state):
+                      next_week = 18 + wk
+                      break
 
           if next_week is None:
               print("::warning::No upcoming week detected; defaulting to 18.")
