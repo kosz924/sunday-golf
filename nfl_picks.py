@@ -38,6 +38,262 @@ ODDS_URL_TEMPLATE = (
 DEFAULT_MAX_POINTS = 16
 LOGIN_URL = "https://fantasyteamsnetwork.com/play/login"
 MAKE_WEEK_URL = "https://fantasyteamsnetwork.com/play/make_week"
+MAKE_PLAYOFF_URL = "https://fantasyteamsnetwork.com/play/make_playoff"
+
+
+@dataclass
+class PlayoffSlot:
+    index: int
+    visitor_name: str
+    home_name: str
+    site_total: float
+    winner_radio_name: str
+    visitor_value: str
+    home_value: str
+    over_radio_name: str
+    over_value: str
+    under_value: str
+    number_value: str
+
+
+@dataclass
+class PlayoffPick:
+    slot: PlayoffSlot
+    game: Optional[Game]  # None if no matching game found
+    selected_winner: str  # "visitor" or "home"
+    selected_ou: str      # "over", "under", "number"
+    confidence_points: int = 2  # Fixed at 2 in the example HTML
+
+
+
+
+def fetch_playoff_slots(
+    session: requests.Session,
+    week: int,
+    login_id: Optional[str],
+    login_key: Optional[str],
+) -> List[PlayoffSlot]:
+    params = {"week": week}
+    if login_id:
+        params["i"] = login_id
+    if login_key:
+        params["k"] = login_key
+    
+    # We must fetch the actual page to get the site totals and radio values
+    response = session.get(MAKE_PLAYOFF_URL, params=params, timeout=15)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    
+    slots: List[PlayoffSlot] = []
+    
+    # Iterate through rows that look like game rows
+    # Based on HTML: <tr><td><input type=radio name=gm1 ...></td>...</tr>
+    
+    # We can search for the winner radio inputs
+    winner_radios = soup.find_all("input", attrs={"name": re.compile(r"^gm\d+")})
+    
+    # Group them by name to form slots (since there are 2 per game)
+    grouped_radios: Dict[str, List[Any]] = {}
+    for radio in winner_radios:
+        name = radio.get("name")
+        grouped_radios.setdefault(name, []).append(radio)
+        
+    for name, radios in grouped_radios.items():
+        if len(radios) < 2:
+            continue
+            
+        # Assume radio[0] is visitor, radio[1] is home based on HTML order
+        # verify order in DOM? find_all usually returns in document order.
+        
+        # We need to find the parent row to extract other details
+        row = radios[0].find_parent("tr")
+        if not row:
+            continue
+            
+        cells = row.find_all("td")
+        # Layout from HTML:
+        # 0: Visitor Radio
+        # 1: Visitor Logo
+        # 2: Visitor Name (class=lineitem)
+        # 3: Home Logo
+        # 4: Home Radio
+        # 5: Home Name (class=lineitem)
+        # 6: Total (class=lineitem align=center) e.g. "46"
+        # 7: O/U Radios
+        # 8: Points
+        
+        if len(cells) < 8:
+            continue
+            
+        visitor_radio = cells[0].find("input", type="radio")
+        home_radio = cells[4].find("input", type="radio")
+        
+        if not visitor_radio or not home_radio:
+            continue
+            
+        visitor_name = cells[2].get_text(strip=True)
+        home_name = cells[5].get_text(strip=True)
+        
+        total_text = cells[6].get_text(strip=True)
+        try:
+            site_total = float(total_text)
+        except ValueError:
+            logging.warning("Could not parse site total '%s' for %s vs %s", total_text, visitor_name, home_name)
+            site_total = 0.0
+            
+        ou_cell = cells[7]
+        ou_radios = ou_cell.find_all("input", type="radio")
+        # Expecting Under, Over, Number
+        over_val = ""
+        under_val = ""
+        number_val = ""
+        over_name = ""
+        
+        for r in ou_radios:
+            over_name = r.get("name")
+            val = r.get("value", "")
+            # Based on HTML: O3555PU (Under), O3555PO (Over), O3555PN (Number)
+            if val.endswith("PO"):
+                over_val = val
+            elif val.endswith("PU"):
+                under_val = val
+            elif val.endswith("PN"):
+                number_val = val
+        
+        if not over_name:
+            continue
+
+        # Extract index from 'gm1' -> 1
+        try:
+            idx = int(name.replace("gm", ""))
+        except ValueError:
+            idx = 0
+
+        slots.append(PlayoffSlot(
+            index=idx,
+            visitor_name=visitor_name,
+            home_name=home_name,
+            site_total=site_total,
+            winner_radio_name=name,
+            visitor_value=visitor_radio.get("value"),
+            home_value=home_radio.get("value"),
+            over_radio_name=over_name,
+            over_value=over_val,
+            under_value=under_val,
+            number_value=number_val
+        ))
+        
+    slots.sort(key=lambda s: s.index)
+    return slots
+
+
+def generate_playoff_picks(
+    slots: List[PlayoffSlot],
+    games: List[Game],
+) -> List[PlayoffPick]:
+    picks: List[PlayoffPick] = []
+    
+    # Normalize game team names for matching
+    game_map: Dict[Tuple[str, str], Game] = {}
+    
+    for slot in slots:
+        vis_norm = normalize_team_name(slot.visitor_name)
+        home_norm = normalize_team_name(slot.home_name)
+        vis_aliases = aliases_from_label(slot.visitor_name)
+        home_aliases = aliases_from_label(slot.home_name)
+        
+        matched_game: Optional[Game] = None
+        
+        for g in games:
+            gh_aliases = set(generate_team_aliases(g.home["team"])) | aliases_from_label(g.home["team"].get("displayName", ""))
+            ga_aliases = set(generate_team_aliases(g.away["team"])) | aliases_from_label(g.away["team"].get("displayName", ""))
+            
+            # Check match
+            if (vis_aliases & ga_aliases) and (home_aliases & gh_aliases):
+                matched_game = g
+                break
+            if (vis_aliases & gh_aliases) and (home_aliases & ga_aliases):
+                # Swapped home/away? The slot implies specific home/visitor cols, but let's just match teams.
+                matched_game = g
+                break
+        
+        if not matched_game:
+            logging.warning("No odds found for playoff slot: %s vs %s", slot.visitor_name, slot.home_name)
+            # Default to home winner, and 'Number' or 'Under'?
+            # For safety, let's pick Home and Number/Under.
+            picks.append(PlayoffPick(slot=slot, game=None, selected_winner="home", selected_ou="number"))
+            continue
+            
+        # Determine Winner (Favorite)
+        # If favorite is home, pick home.
+        fav = matched_game.favorite
+        # Is the favorite the "home" or "visitor" listed in the slot?
+        # We need to check which side matches the favorite
+        fav_aliases = set(generate_team_aliases(fav["team"])) | aliases_from_label(fav["team"].get("displayName", ""))
+        
+        if fav_aliases & home_aliases:
+            selected_winner = "home"
+        elif fav_aliases & vis_aliases:
+            selected_winner = "visitor"
+        else:
+            # Should not happen if game matched
+            selected_winner = "home"
+
+        # Determine O/U
+        # External Total
+        ext_total = matched_game.over_under
+        selected_ou = "number" # Default if match
+        
+        if ext_total is not None:
+            if ext_total > slot.site_total:
+                selected_ou = "over"
+            elif ext_total < slot.site_total:
+                selected_ou = "under"
+            else:
+                # Exact match
+                selected_ou = "number"
+        else:
+            logging.warning("No external total for %s vs %s; defaulting to 'number'", slot.visitor_name, slot.home_name)
+            
+        picks.append(PlayoffPick(slot=slot, game=matched_game, selected_winner=selected_winner, selected_ou=selected_ou))
+        
+    return picks
+
+
+def render_playoff_picks(picks: List[PlayoffPick]) -> str:
+    lines = ["Playoff Picks (Week 19+)", "------------------------"]
+    for p in picks:
+        s = p.slot
+        g = p.game
+        
+        winner_str = s.home_name if p.selected_winner == "home" else s.visitor_name
+        fav_str = ""
+        if g:
+            prob = g.odds.favorite_probability
+            spread = g.spread_magnitude
+            fav_part = []
+            if prob: fav_part.append(f"{prob*100:.1f}%")
+            if spread: fav_part.append(f"-{spread}")
+            fav_str = f" ({', '.join(fav_part)})"
+            
+        ou_str = p.selected_ou.upper()
+        
+        ext_total_str = f"{g.over_under}" if (g and g.over_under) else "??"
+        total_cmp = f"Site: {s.site_total} vs Ext: {ext_total_str}"
+        
+        lines.append(f"{s.visitor_name} @ {s.home_name}")
+        lines.append(f"  Winner: {winner_str}{fav_str}")
+        lines.append(f"  O/U:    {ou_str} ({total_cmp})")
+        lines.append("")
+    return "\n".join(lines)
+    display_name = home_team.get("displayName") or home_team.get("name") or home_team.get("shortDisplayName")
+    provider_label = f"{display_name or 'Home'} {note}"
+    return GameOdds(
+        spread=0.0,
+        over_under=None,
+        provider=provider_label,
+        favorite_side="home",
+    )
 
 
 def fallback_home_odds(home_team: Dict[str, Any], note: str) -> GameOdds:
@@ -122,12 +378,23 @@ class Pick:
 
     def spread_label(self) -> str:
         prob = self.game.odds.favorite_probability
-        if prob is not None:
-            return f"{prob * 100:.1f}%"
         spread = self.game.spread_magnitude
-        if self.selection == "favorite":
-            return f"-{spread:g}"
-        return f"+{spread:g}"
+        
+        parts = []
+        if prob is not None:
+            display_prob = prob if self.selection == "favorite" else (1.0 - prob)
+            parts.append(f"{display_prob * 100:.1f}%")
+        
+        if spread != 0.0:
+            s_val = f"-{spread:g}" if self.selection == "favorite" else f"+{spread:g}"
+            parts.append(s_val)
+            
+        if not parts:
+            return "PK"
+            
+        if len(parts) == 2:
+            return f"{parts[0]} ({parts[1]})"
+        return parts[0]
 
 
 @dataclass
@@ -492,7 +759,7 @@ def assign_points(games: List[Game], max_points: int, seed: Optional[int]) -> Li
     def ranking_key(game: Game) -> Tuple[float, float, int]:
         probability = game.odds.favorite_probability
         prob_key = probability if probability is not None else -1.0
-        spread_key = 0.0 if probability is not None else game.spread_magnitude
+        spread_key = game.spread_magnitude
         home_flag = 1 if game.favorite is game.home else 0
         return (prob_key, spread_key, home_flag)
 
@@ -637,6 +904,7 @@ class MondaySummary:
     combined_total: Optional[float]
     computed_pick: Optional[int]
     missing_totals: bool
+    label: str = "Monday"
 
 
 def render_pick_table(picks: List[Pick]) -> str:
@@ -666,21 +934,31 @@ def render_pick_table(picks: List[Pick]) -> str:
 
 
 def build_monday_summary(picks: List[Pick]) -> MondaySummary:
-    monday_games = [pick.game for pick in picks if pick.game.start_et.weekday() == 0]
-    if not monday_games:
-        return MondaySummary(games=[], combined_total=None, computed_pick=None, missing_totals=True)
+    # First, try actual Monday games (weekday 0)
+    target_games = [pick.game for pick in picks if pick.game.start_et.weekday() == 0]
+    label = "Monday"
 
-    totals = [g.over_under for g in monday_games]
+    if not target_games and picks:
+        # Fallback: Find the latest game time
+        max_time = max(p.game.start_et for p in picks)
+        target_games = [p.game for p in picks if p.game.start_et == max_time]
+        label = "Final Game"
+
+    if not target_games:
+        return MondaySummary(games=[], combined_total=None, computed_pick=None, missing_totals=True, label=label)
+
+    totals = [g.over_under for g in target_games]
     if any(total is None for total in totals):
-        return MondaySummary(games=monday_games, combined_total=None, computed_pick=None, missing_totals=True)
+        return MondaySummary(games=target_games, combined_total=None, computed_pick=None, missing_totals=True, label=label)
 
     combined_total = sum(total for total in totals if total is not None)
     computed_pick = round_half_up(combined_total)
     return MondaySummary(
-        games=monday_games,
+        games=target_games,
         combined_total=combined_total,
         computed_pick=computed_pick,
         missing_totals=False,
+        label=label,
     )
 
 
@@ -1168,27 +1446,32 @@ def build_polymarket_lookup(
     return lookup
 
 
-def merge_over_under(
+def merge_secondary_odds(
     primary_lookup: Dict[Tuple[str, str], GameOdds],
-    totals_lookup: Dict[Tuple[str, str], GameOdds],
+    secondary_lookup: Dict[Tuple[str, str], GameOdds],
 ) -> Dict[Tuple[str, str], GameOdds]:
-    """Return a lookup where primary entries gain over/under values from totals_lookup when missing."""
-    if not totals_lookup:
+    """Return a lookup where primary entries gain values (spread/total) from secondary_lookup when missing."""
+    if not secondary_lookup:
         return primary_lookup
 
     merged: Dict[Tuple[str, str], GameOdds] = {}
     for key, odds in primary_lookup.items():
         over_under_value = odds.over_under
-        if over_under_value is None:
-            total_odds = totals_lookup.get(key)
-            swapped = (key[1], key[0])
-            if total_odds is None:
-                total_odds = totals_lookup.get(swapped)
-            if total_odds and total_odds.over_under is not None:
-                over_under_value = total_odds.over_under
+        spread_value = odds.spread
+
+        secondary_odds = secondary_lookup.get(key)
+        swapped = (key[1], key[0])
+        if secondary_odds is None:
+            secondary_odds = secondary_lookup.get(swapped)
+
+        if secondary_odds:
+            if over_under_value is None and secondary_odds.over_under is not None:
+                over_under_value = secondary_odds.over_under
+            if spread_value == 0.0 and secondary_odds.spread != 0.0:
+                spread_value = secondary_odds.spread
 
         merged[key] = GameOdds(
-            spread=odds.spread,
+            spread=spread_value,
             over_under=over_under_value,
             provider=odds.provider,
             favorite_side=odds.favorite_side,
@@ -1199,9 +1482,9 @@ def merge_over_under(
 
 def format_monday_summary(summary: MondaySummary, override_pick: Optional[int] = None) -> str:
     if not summary.games:
-        return "No Monday game found for tie-breaker."
+        return f"No {summary.label} game found for tie-breaker."
     if summary.missing_totals:
-        return "Tie-breaker: At least one Monday game is missing a listed total; please check manually."
+        return f"Tie-breaker: At least one {summary.label} game is missing a listed total; please check manually."
 
     games_sorted = sorted(summary.games, key=lambda g: g.start_et)
     details = []
@@ -1214,7 +1497,7 @@ def format_monday_summary(summary: MondaySummary, override_pick: Optional[int] =
     final_pick = override_pick if override_pick is not None else summary.computed_pick
     pick_display = str(final_pick) if final_pick is not None else "--"
     joined = " | ".join(details)
-    return f"Tie-breaker (Monday): {joined} | Combined O/U {combined_display} | Total pick {pick_display}"
+    return f"Tie-breaker ({summary.label}): {joined} | Combined O/U {combined_display} | Total pick {pick_display}"
 
 
 def parse_existing_picks_html(html: str) -> ExistingSubmission:
@@ -1475,7 +1758,7 @@ def submit_picks_via_selenium(
 ) -> None:
     try:
         from selenium import webdriver
-        from selenium.common.exceptions import NoSuchElementException, TimeoutException
+        from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
         from selenium.webdriver.common.by import By
         from selenium.webdriver.common.keys import Keys
         from selenium.webdriver.support import expected_conditions as EC
@@ -1694,6 +1977,7 @@ def submit_picks_via_selenium(
 
         submit_clicked = False
         submit_button = None
+        found_xpath = None
         submit_xpaths = [
             "//input[@type='submit']",
             "//input[@type='image']",
@@ -1705,6 +1989,7 @@ def submit_picks_via_selenium(
             buttons = driver.find_elements(By.XPATH, xpath)
             if buttons:
                 submit_button = buttons[0]
+                found_xpath = xpath
                 driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_button)
                 driver.execute_script("arguments[0].focus();", submit_button)
                 submit_clicked = True
@@ -1722,7 +2007,35 @@ def submit_picks_via_selenium(
                 driver.execute_script("arguments[0].value='no';", hidden_craps)
             except NoSuchElementException:
                 logging.debug("Hidden craps field not found; proceeding without overriding.")
+        
+        try:
             driver.execute_script("arguments[0].click();", submit_button)
+        except StaleElementReferenceException:
+            logging.debug("Submit button became stale; re-acquiring...")
+            refound = False
+            # First try the previously working xpath
+            if found_xpath:
+                try:
+                    submit_button = driver.find_element(By.XPATH, found_xpath)
+                    driver.execute_script("arguments[0].click();", submit_button)
+                    refound = True
+                except NoSuchElementException:
+                    logging.debug("Saved xpath %s no longer valid; re-scanning...", found_xpath)
+            
+            # If that failed, re-scan all candidates
+            if not refound:
+                for xpath in submit_xpaths:
+                    buttons = driver.find_elements(By.XPATH, xpath)
+                    if buttons:
+                        submit_button = buttons[0]
+                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_button)
+                        driver.execute_script("arguments[0].focus();", submit_button)
+                        driver.execute_script("arguments[0].click();", submit_button)
+                        refound = True
+                        break
+            
+            if not refound:
+                raise RuntimeError("Submit button stale and could not be re-acquired.")
 
         try:
             wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
@@ -1737,12 +2050,343 @@ def submit_picks_via_selenium(
                 except EOFError:
                     logging.debug("Pause requested but stdin not available; closing browser.")
             driver.quit()
+def submit_playoff_picks_via_selenium(
+    picks: List[PlayoffPick],
+    *,
+    week: int,
+    login_id: str,
+    password: str,
+    login_key: Optional[str],
+    browser: str,
+    driver_path: Optional[str],
+    headless: bool,
+    pause_after: bool,
+) -> None:
+    try:
+        from selenium import webdriver
+        from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import Select, WebDriverWait
+    except ImportError as exc:
+        raise RuntimeError(
+            "Selenium is required to submit picks. Install it via `pip install selenium`."
+        ) from exc
+
+    browser = browser.lower()
+    driver = None
+
+    def build_driver() -> webdriver.Remote:
+        nonlocal driver
+        if browser == "chrome":
+            try:
+                from selenium.webdriver.chrome.options import Options as ChromeOptions
+                from selenium.webdriver.chrome.service import Service as ChromeService
+            except ImportError as exc:
+                raise RuntimeError("Selenium Chrome bindings are unavailable.") from exc
+
+            options = ChromeOptions()
+            if headless:
+                options.add_argument("--headless=new")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--window-size=1920,1080")
+
+            if driver_path:
+                service = ChromeService(executable_path=driver_path)
+            else:
+                try:
+                    from webdriver_manager.chrome import ChromeDriverManager
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "webdriver_manager is required when no ChromeDriver path is provided. "
+                        "Install it via `pip install webdriver-manager` or pass --selenium-driver-path."
+                    ) from exc
+                service = ChromeService(ChromeDriverManager().install())
+
+            driver = webdriver.Chrome(service=service, options=options)
+            return driver
+
+        if browser == "firefox":
+            try:
+                from selenium.webdriver.firefox.options import Options as FirefoxOptions
+                from selenium.webdriver.firefox.service import Service as FirefoxService
+            except ImportError as exc:
+                raise RuntimeError("Selenium Firefox bindings are unavailable.") from exc
+
+            options = FirefoxOptions()
+            options.headless = headless
+
+            if driver_path:
+                service = FirefoxService(executable_path=driver_path)
+            else:
+                try:
+                    from webdriver_manager.firefox import GeckoDriverManager
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "webdriver_manager is required when no GeckoDriver path is provided. "
+                        "Install it via `pip install webdriver-manager` or pass --selenium-driver-path."
+                    ) from exc
+                service = FirefoxService(GeckoDriverManager().install())
+
+            driver = webdriver.Firefox(service=service, options=options)
+            return driver
+
+        raise RuntimeError(f"Unsupported Selenium browser '{browser}'. Choose 'chrome' or 'firefox'.")
+
+    driver = build_driver()
+    wait = WebDriverWait(driver, 20)
+
+    try:
+        driver.get(LOGIN_URL)
+        wait.until(EC.presence_of_element_located((By.NAME, "user_id")))
+
+        user_input = driver.find_element(By.NAME, "user_id")
+        user_input.clear()
+        user_input.send_keys(login_id)
+
+        password_input = driver.find_element(By.NAME, "p")
+        password_input.clear()
+        password_input.send_keys(password)
+        password_input.send_keys(Keys.RETURN)
+
+        # Wait for navigation or detect login error.
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        page_source = driver.page_source.lower()
+        if "try again" in page_source and "user id" in page_source:
+            raise RuntimeError("Login failed; please verify the provided credentials.")
+
+        params = {"week": week}
+        if login_id:
+            params["i"] = login_id
+        if login_key:
+            params["k"] = login_key
+        target_url = f"{MAKE_PLAYOFF_URL}?{urlencode(params)}"
+        driver.get(target_url)
+
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "form")))
+
+        # Fill the form
+        for pick in picks:
+            slot = pick.slot
+            
+            # 1. Winner
+            val_to_click = slot.visitor_value if pick.selected_winner == "visitor" else slot.home_value
+            # Find radio with name=slot.winner_radio_name and value=val_to_click
+            # Use xpath for precision
+            try:
+                winner_radio = driver.find_element(By.XPATH, f"//input[@name='{slot.winner_radio_name}' and @value='{val_to_click}']")
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", winner_radio)
+                if not winner_radio.is_selected():
+                    winner_radio.click()
+            except NoSuchElementException:
+                logging.error("Could not find winner radio for %s (val=%s)", slot.winner_radio_name, val_to_click)
+
+            # 2. O/U
+            ou_val = ""
+            if pick.selected_ou == "over":
+                ou_val = slot.over_value
+            elif pick.selected_ou == "under":
+                ou_val = slot.under_value
+            else:
+                ou_val = slot.number_value
+            
+            if ou_val:
+                try:
+                    ou_radio = driver.find_element(By.XPATH, f"//input[@name='{slot.over_radio_name}' and @value='{ou_val}']")
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", ou_radio)
+                    if not ou_radio.is_selected():
+                        ou_radio.click()
+                except NoSuchElementException:
+                    logging.error("Could not find O/U radio for %s (val=%s)", slot.over_radio_name, ou_val)
+
+        # Submit
+        # Look for image input or submit button
+        # The playoff form has <input type=image src="/images/submit_red.gif" border=0>
+        submit_clicked = False
+        try:
+            submit_btn = driver.find_element(By.XPATH, "//input[@type='image' and contains(@src, 'submit')]")
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_btn)
+            submit_btn.click()
+            submit_clicked = True
+        except NoSuchElementException:
+            # Fallback
+            try:
+                submit_btn = driver.find_element(By.XPATH, "//input[@type='submit']")
+                submit_btn.click()
+                submit_clicked = True
+            except NoSuchElementException:
+                logging.error("Could not find submit button on playoff page.")
+
+        if submit_clicked:
+             try:
+                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+             except TimeoutException:
+                logging.warning("Timed out waiting for submission confirmation.")
+
+    finally:
+        if driver is not None:
+            if pause_after:
+                try:
+                    input("Selenium session paused. Press Enter to close the browser...")
+                except EOFError:
+                    pass
+            driver.quit()
+
+
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
 
     season = args.season or infer_season_year()
     session = requests.Session()
+    
+    # ---------------------------------------------------------
+    # PLAYOFF LOGIC (Week 19+)
+    # ---------------------------------------------------------
+    if args.week >= 19:
+        logging.info("Week %d detected as Playoffs/Wild Card.", args.week)
+        
+        # 1. Fetch Form Slots (Need Login for Site Totals)
+        login_id = args.login_id or os.environ.get("FTN_USER_ID")
+        login_key = args.login_key or os.environ.get("FTN_KEY")
+        # For playoff scraping, we prefer having credentials to pull the exact form
+        # But if not provided, we can't scrape the totals. 
+        if not login_id and not login_key:
+             logging.warning("No login credentials provided. Cannot fetch site totals from make_playoff page.")
+             # We could crash or try to proceed with dummy slots if we had a fallback, but for now let's error or warn
+             # Actually, we need to know the 'Site Total' to make the O/U pick.
+             # So credentials are effectively required unless we hardcode/mock.
+             if args.non_interactive:
+                 raise SystemExit("Login ID/Key required for Playoff week to fetch site totals.")
+             login_id = input("Enter FantasyTeamsNetwork user ID: ").strip()
+        
+        try:
+            slots = fetch_playoff_slots(session, args.week, login_id, login_key)
+        except Exception as exc:
+            logging.error("Failed to fetch playoff slots: %s", exc)
+            return
+
+        if not slots:
+            logging.error("No playoff slots found on the page.")
+            return
+
+        # 2. Fetch External Odds (same as regular season)
+        scoreboard = fetch_json(
+            SCOREBOARD_URL,
+            params={"dates": season, "seasontype": 3, "week": args.week - 18}, # Playoff weeks in ESPN API usually reset or track differently? 
+            # Actually ESPN API 'seasontype=3' (Postseason). Week 1 is Wild Card.
+            # So Week 19 -> Postseason Week 1.
+            session=session,
+        )
+        # Note: 'week' param in ESPN for seasontype 3 starts at 1.
+        # So Week 19 (Season) = Week 1 (Postseason).
+        
+        # Let's try to infer postseason week number
+        espn_week = args.week - 18
+        scoreboard = fetch_json(
+            SCOREBOARD_URL,
+            params={"dates": season, "seasontype": 3, "week": espn_week},
+            session=session,
+        )
+
+        events_info = collect_scoreboard_events(scoreboard)
+        
+        # ... (Odds lookup logic similar to regular season) ...
+        fallback_dir = args.sbr_fallback_dir
+        if not fallback_dir:
+            default_path = Path("data") / f"sbr_week{args.week}.html"
+            if default_path.exists():
+                fallback_dir = str(default_path.parent)
+
+        odds_lookup: Optional[Dict[Tuple[str, str], GameOdds]] = None
+        if args.odds_provider == "the-odds-api":
+            api_key = args.odds_api_key or os.environ.get("ODDS_API_KEY")
+            if not api_key:
+                raise SystemExit("The Odds API key is required.")
+            bookmakers = (
+                [b.strip() for b in args.odds_bookmakers.split(",") if b.strip()]
+                if args.odds_bookmakers else ["fanduel", "draftkings", "betmgm"]
+            )
+            try:
+                odds_lookup = build_the_odds_api_lookup(
+                    events_info,
+                    session=session,
+                    api_key=api_key,
+                    bookmakers=bookmakers,
+                    week=args.week,
+                    fallback_dir=fallback_dir,
+                )
+            except Exception as exc:
+                logging.warning("The Odds API failed: %s", exc)
+                
+        elif args.odds_provider == "polymarket":
+             # Similar logic
+             try:
+                odds_lookup = build_polymarket_lookup(events_info, session=session)
+                # We need totals for O/U picks!
+                totals_api_key = args.odds_api_key or os.environ.get("ODDS_API_KEY")
+                if totals_api_key:
+                    bookmakers = (
+                        [b.strip() for b in args.odds_bookmakers.split(",") if b.strip()]
+                        if args.odds_bookmakers else ["fanduel", "draftkings", "betmgm"]
+                    )
+                    try:
+                        totals_lookup = build_the_odds_api_lookup(
+                            events_info,
+                            session=session,
+                            api_key=totals_api_key,
+                            bookmakers=bookmakers,
+                            week=args.week,
+                            fallback_dir=fallback_dir,
+                        )
+                        odds_lookup = merge_secondary_odds(odds_lookup, totals_lookup)
+                    except Exception as exc:
+                        logging.warning("Failed to fetch totals for Polymarket: %s", exc)
+             except Exception as exc:
+                 logging.error("Polymarket failed: %s", exc)
+
+        # Parse Games
+        games = parse_games(
+            scoreboard,
+            session=session,
+            preferred_provider=args.provider,
+            odds_source=args.odds_provider,
+            week=args.week,
+            odds_lookup=odds_lookup,
+        )
+        
+        # 3. Generate Picks
+        picks = generate_playoff_picks(slots, games)
+        
+        print(render_playoff_picks(picks))
+        
+        # 4. Submit
+        if args.submit or (not args.non_interactive and input("Submit playoff picks? [y/N]: ").lower() in ("y", "yes")):
+            password = args.login_password or os.environ.get("FTN_PASSWORD")
+            if not password:
+                 if args.non_interactive: raise SystemExit("Password required.")
+                 password = getpass("Enter FantasyTeamsNetwork password: ")
+            
+            submit_playoff_picks_via_selenium(
+                picks,
+                week=args.week,
+                login_id=login_id,
+                password=password,
+                login_key=login_key,
+                browser=args.selenium_browser,
+                driver_path=args.selenium_driver_path,
+                headless=not args.selenium_no_headless,
+                pause_after=args.selenium_pause_after,
+            )
+            print("Playoff picks submitted.")
+            
+        return
+
+    # ---------------------------------------------------------
+    # REGULAR SEASON LOGIC (Weeks 1-18)
+    # ---------------------------------------------------------
     scoreboard = fetch_json(
         SCOREBOARD_URL,
         params={"dates": season, "seasontype": 2, "week": args.week},
@@ -1823,7 +2467,7 @@ def main() -> None:
                     week=args.week,
                     fallback_dir=fallback_dir,
                 )
-                odds_lookup = merge_over_under(odds_lookup, totals_lookup)
+                odds_lookup = merge_secondary_odds(odds_lookup, totals_lookup)
             except requests.RequestException as exc:  # pylint: disable=broad-except
                 logging.warning("Unable to fetch totals for Polymarket via The Odds API: %s", exc)
         else:
