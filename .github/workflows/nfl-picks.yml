@@ -7,10 +7,10 @@ on:
         description: "Set to true to bypass the start-date gate (for manual tests)"
         required: false
         default: "false"
-  schedule:
+  #schedule:
     # 8:00 AM US/Eastern every Saturday
-    - cron: "0 13 * * 6"
-      timezone: "America/New_York"
+    #- cron: "0 13 * * 6"
+      #timezone: "America/New_York"
 
 jobs:
   run:
