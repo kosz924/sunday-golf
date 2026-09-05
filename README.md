@@ -74,6 +74,7 @@ The core script is `nfl_picks.py`. Typical flow every Friday:
 - `--selenium-driver-path /path/to/driver` – explicit WebDriver binary.
 - `--selenium-no-headless` – show the browser window for debugging.
 - `--selenium-pause-after` – leave the browser open after submission until you press Enter.
+- `--suicide-team` – team to select for the suicide pick (defaults to highest confidence pick).
 - `--max-points`, `--seed`, `--provider` – customize confidence ladder and odds source.
 - `--debug` – enable verbose logging (helpful if ESPN/FTN endpoints change).
 
