@@ -105,6 +105,92 @@ def fetch_playoff_slots(
         # Assume radio[0] is visitor, radio[1] is home based on HTML order
         # verify order in DOM? find_all usually returns in document order.
         
+        # Check for new layout (.game) vs old layout (tr)
+        game_container = radios[0].find_parent(class_=re.compile(r"\bgame\b"))
+        if game_container:
+            team_labels = game_container.select("label.team")
+            visitor_name = ""
+            home_name = ""
+            vis_val = ""
+            home_val = ""
+
+            for t in team_labels:
+                side_el = t.select_one(".side")
+                name_el = t.select_one(".name")
+                radio = t.select_one("input[type='radio']")
+                side_text = side_el.get_text(strip=True).lower() if side_el else ""
+                t_name = name_el.get_text(strip=True) if name_el else ""
+                val = radio.get("value", "") if radio else ""
+
+                if "visitor" in side_text or "away" in side_text:
+                    visitor_name = t_name
+                    vis_val = val
+                elif "home" in side_text:
+                    home_name = t_name
+                    home_val = val
+
+            if not visitor_name or not home_name:
+                matchup = game_container.get("data-matchup") or ""
+                parts = matchup.split(" at ")
+                if len(parts) == 2:
+                    visitor_name = visitor_name or parts[0].strip()
+                    home_name = home_name or parts[1].strip()
+                vis_val = vis_val or radios[0].get("value", "")
+                home_val = home_val or radios[1].get("value", "")
+
+            # Over/Under radios
+            ou_radios = [r for r in game_container.find_all("input", type="radio") if r.get("name") != name]
+            over_name = ""
+            over_val = ""
+            under_val = ""
+            number_val = ""
+            for r in ou_radios:
+                over_name = r.get("name")
+                val = r.get("value", "")
+                if val.endswith("PO"):
+                    over_val = val
+                elif val.endswith("PU"):
+                    under_val = val
+                elif val.endswith("PN"):
+                    number_val = val
+
+            site_total = 0.0
+            ou_container = game_container.find(class_=re.compile(r"\bou\b"))
+            if ou_container:
+                nums = re.findall(r"\d+(?:\.\d+)?", ou_container.get_text())
+                if nums:
+                    try:
+                        site_total = float(nums[0])
+                    except ValueError:
+                        pass
+            if site_total == 0.0:
+                total_match = re.search(r"(?:total|o/u)[:\s]*(\d+(?:\.\d+)?)", game_container.get_text(), re.IGNORECASE)
+                if total_match:
+                    try:
+                        site_total = float(total_match.group(1))
+                    except ValueError:
+                        pass
+
+            try:
+                idx = int(name.replace("gm", ""))
+            except ValueError:
+                idx = 0
+
+            slots.append(PlayoffSlot(
+                index=idx,
+                visitor_name=visitor_name,
+                home_name=home_name,
+                site_total=site_total,
+                winner_radio_name=name,
+                visitor_value=vis_val,
+                home_value=home_val,
+                over_radio_name=over_name,
+                over_value=over_val,
+                under_value=under_val,
+                number_value=number_val,
+            ))
+            continue
+
         # We need to find the parent row to extract other details
         row = radios[0].find_parent("tr")
         if not row:
@@ -412,6 +498,7 @@ class ExistingGamePick:
 class ExistingSubmission:
     picks: List[ExistingGamePick]
     tie_breaker: Optional[int]
+    suicide: Optional[str] = None
 
 
 def canonicalize_label(value: str) -> str:
@@ -567,6 +654,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep the Selenium browser open after submission until you press Enter",
     )
+    parser.add_argument(
+        "--suicide-team",
+        help="Team to select for the suicide pick (defaults to highest confidence pick)",
+    )
+    parser.add_argument(
+        "--tie-breaker",
+        "--tiebreaker",
+        type=int,
+        dest="tie_breaker",
+        help="Custom total points for Monday tie-breaker",
+    )
     return parser.parse_args()
 
 
@@ -681,7 +779,7 @@ def parse_games(
         start_utc = dt.datetime.fromisoformat(date_str.replace("Z", "+00:00")).astimezone(UTC_TZ)
         start_et = start_utc.astimezone(ET_TZ)
 
-        if start_et.weekday() == 3:  # Thursday
+        if start_et.weekday() in {1, 2, 3, 4}:  # Skip Tue, Wed, Thu, Fri (pre-weekend games)
             continue
 
         competitors = comp.get("competitors", [])
@@ -778,9 +876,13 @@ def assign_points(games: List[Game], max_points: int, seed: Optional[int]) -> Li
     return picks
 
 
-def interactive_adjustments(picks: List[Pick], monday_summary: MondaySummary) -> Tuple[List[Pick], Optional[int]]:
+def interactive_adjustments(
+    picks: List[Pick],
+    monday_summary: MondaySummary,
+    initial_suicide: Optional[str] = None,
+) -> Tuple[List[Pick], Optional[int], Optional[str]]:
     if not picks:
-        return picks, None
+        return picks, None, None
 
     tie_breaker_override: Optional[int] = None
 
@@ -871,8 +973,21 @@ def interactive_adjustments(picks: List[Pick], monday_summary: MondaySummary) ->
             except ValueError:
                 print("Please enter a whole number.")
 
+    # Allow manual adjustment of Suicide pick
+    default_suicide = initial_suicide
+    if not default_suicide and picks:
+        default_suicide = picks[0].selected_team.get("displayName")
+
+    suicide_override: Optional[str] = None
+    if default_suicide:
+        sui_input = input(
+            f"Enter a Suicide pick (press Enter to keep '{default_suicide}'): "
+        ).strip()
+        if sui_input:
+            suicide_override = sui_input
+
     picks.sort(key=lambda p: p.points, reverse=True)
-    return picks, tie_breaker_override
+    return picks, tie_breaker_override, suicide_override or default_suicide
 
 
 def round_half_up(value: float) -> int:
@@ -1331,20 +1446,31 @@ def build_polymarket_lookup(
     if not events_info:
         return {}
 
-    params = {
-        "tag_id": tag_id,
-        "active": "true",
-        "closed": "false",
-        "sort": "volume",
-        "limit": 200,
-    }
-    try:
-        response = session.get("https://gamma-api.polymarket.com/events", params=params, timeout=15)
-        response.raise_for_status()
-        events = response.json()
-    except requests.RequestException as exc:
-        logging.error("Polymarket request failed: %s", exc)
-        raise
+    events: List[Dict[str, Any]] = []
+    offset = 0
+    max_pages = 8  # up to 800 events (covers all active NFL markets)
+    for _ in range(max_pages):
+        params = {
+            "tag_slug": "nfl",
+            "active": "true",
+            "closed": "false",
+            "limit": 100,
+            "offset": offset,
+        }
+        try:
+            response = session.get("https://gamma-api.polymarket.com/events", params=params, timeout=15)
+            response.raise_for_status()
+            batch = response.json()
+        except requests.RequestException as exc:
+            logging.error("Polymarket request failed: %s", exc)
+            raise
+
+        if not batch:
+            break
+        events.extend(batch)
+        offset += len(batch)
+        if len(batch) < 100:
+            break
 
     def parse_list(value: Any) -> List[Any]:
         if isinstance(value, list):
@@ -1453,8 +1579,10 @@ def merge_secondary_odds(
     """Return a lookup where primary entries gain values (spread/total) from secondary_lookup when missing."""
     if not secondary_lookup:
         return primary_lookup
+    if not primary_lookup:
+        return secondary_lookup
 
-    merged: Dict[Tuple[str, str], GameOdds] = {}
+    merged: Dict[Tuple[str, str], GameOdds] = dict(secondary_lookup)
     for key, odds in primary_lookup.items():
         over_under_value = odds.over_under
         spread_value = odds.spread
@@ -1470,6 +1598,7 @@ def merge_secondary_odds(
             if spread_value == 0.0 and secondary_odds.spread != 0.0:
                 spread_value = secondary_odds.spread
 
+        merged.pop(swapped, None)
         merged[key] = GameOdds(
             spread=spread_value,
             over_under=over_under_value,
@@ -1504,86 +1633,150 @@ def parse_existing_picks_html(html: str) -> ExistingSubmission:
     soup = BeautifulSoup(html, "html.parser")
     results: Dict[Tuple[str, str], ExistingGamePick] = {}
     tie_breaker_value: Optional[int] = None
+    suicide_pick: Optional[str] = None
 
-    for row in soup.find_all("tr"):
-        radios = row.find_all("input", attrs={"type": "radio"})
-        if len(radios) < 2:
-            continue
+    # Check for new layout (.game)
+    game_elements = soup.find_all(class_=re.compile(r"\bgame\b"))
+    if game_elements:
+        for game in game_elements:
+            vis_name = ""
+            home_name = ""
+            vis_radio = None
+            home_radio = None
 
-        def extract_team(radio_tag) -> str:
-            cell = radio_tag.find_parent("td")
-            if not cell:
-                return ""
-            row = cell.find_parent("tr")
-            if not row:
-                return ""
+            team_labels = game.select("label.team")
+            for t in team_labels:
+                side_el = t.select_one(".side")
+                name_el = t.select_one(".name")
+                radio = t.select_one("input[type='radio']")
+                side_text = side_el.get_text(strip=True).lower() if side_el else ""
+                t_name = name_el.get_text(strip=True) if name_el else ""
 
-            cells = row.find_all("td")
-            try:
-                idx = cells.index(cell)
-            except ValueError:
-                return ""
+                if "visitor" in side_text or "away" in side_text:
+                    vis_name = t_name
+                    vis_radio = radio
+                elif "home" in side_text:
+                    home_name = t_name
+                    home_radio = radio
 
-            def scan(indices: range, require_lineitem: bool) -> Optional[str]:
-                for pos in indices:
-                    if pos < 0 or pos >= len(cells):
-                        continue
-                    candidate = cells[pos]
-                    text = candidate.get_text(strip=True)
-                    if not text:
-                        continue
-                    classes = candidate.get("class") or []
-                    if require_lineitem and "lineitem" not in classes:
-                        continue
-                    return text
-                return None
+            if not vis_name or not home_name:
+                matchup = game.get("data-matchup") or ""
+                parts = matchup.split(" at ")
+                radios = game.find_all("input", attrs={"type": "radio"})
+                if len(parts) == 2:
+                    vis_name = vis_name or parts[0].strip()
+                    home_name = home_name or parts[1].strip()
+                if len(radios) >= 2:
+                    vis_radio = vis_radio or radios[0]
+                    home_radio = home_radio or radios[1]
 
-            # Prefer cells explicitly marked as line items (team names).
-            name = scan(range(idx + 1, len(cells)), require_lineitem=True)
-            if not name:
-                name = scan(range(idx - 1, -1, -1), require_lineitem=True)
-            if not name:
-                name = scan(range(idx + 1, len(cells)), require_lineitem=False)
-            if not name:
-                name = scan(range(idx - 1, -1, -1), require_lineitem=False)
-            return name or ""
+            if not vis_name or not home_name:
+                continue
 
-        visitor_radio = radios[0]
-        home_radio = radios[1]
-        visitor_name = extract_team(visitor_radio)
-        home_name = extract_team(home_radio)
-        if not visitor_name or not home_name:
-            continue
+            selected = ""
+            if vis_radio and (vis_radio.has_attr("checked") or vis_radio.get("checked") is not None):
+                selected = vis_name
+            elif home_radio and (home_radio.has_attr("checked") or home_radio.get("checked") is not None):
+                selected = home_name
 
-        selected = visitor_name if visitor_radio.has_attr("checked") else home_name if home_radio.has_attr("checked") else ""
-        if not selected:
-            continue
+            if not selected:
+                continue
 
-        points_value: Optional[int] = None
-        points_input = row.find(
-            "input",
-            attrs={
-                "name": re.compile(r"(pt|point)", re.IGNORECASE),
-            },
-        )
-        if points_input:
-            value = points_input.get("value")
-            if value and value.strip().isdigit():
-                points_value = int(value.strip())
+            pts_val: Optional[int] = None
+            pts_input = game.find(class_=re.compile(r"\bpts-field\b"))
+            pts_el = pts_input.find("input") if pts_input else game.find("input", attrs={"name": re.compile(r"^pts\d+", re.IGNORECASE)})
+            if pts_el:
+                val = pts_el.get("value")
+                if val and val.strip().isdigit():
+                    pts_val = int(val.strip())
 
-        key = (canonicalize_label(visitor_name), canonicalize_label(home_name))
-        results[key] = ExistingGamePick(
-            visitor=visitor_name,
-            home=home_name,
-            selected=selected,
-            points=points_value,
-        )
+            key = (canonicalize_label(vis_name), canonicalize_label(home_name))
+            results[key] = ExistingGamePick(
+                visitor=vis_name,
+                home=home_name,
+                selected=selected,
+                points=pts_val,
+            )
+    else:
+        for row in soup.find_all("tr"):
+            radios = row.find_all("input", attrs={"type": "radio"})
+            if len(radios) < 2:
+                continue
+
+            def extract_team(radio_tag) -> str:
+                cell = radio_tag.find_parent("td")
+                if not cell:
+                    return ""
+                row = cell.find_parent("tr")
+                if not row:
+                    return ""
+
+                cells = row.find_all("td")
+                try:
+                    idx = cells.index(cell)
+                except ValueError:
+                    return ""
+
+                def scan(indices: range, require_lineitem: bool) -> Optional[str]:
+                    for pos in indices:
+                        if pos < 0 or pos >= len(cells):
+                            continue
+                        candidate = cells[pos]
+                        text = candidate.get_text(strip=True)
+                        if not text:
+                            continue
+                        classes = candidate.get("class") or []
+                        if require_lineitem and "lineitem" not in classes:
+                            continue
+                        return text
+                    return None
+
+                # Prefer cells explicitly marked as line items (team names).
+                name = scan(range(idx + 1, len(cells)), require_lineitem=True)
+                if not name:
+                    name = scan(range(idx - 1, -1, -1), require_lineitem=True)
+                if not name:
+                    name = scan(range(idx + 1, len(cells)), require_lineitem=False)
+                if not name:
+                    name = scan(range(idx - 1, -1, -1), require_lineitem=False)
+                return name or ""
+
+            visitor_radio = radios[0]
+            home_radio = radios[1]
+            visitor_name = extract_team(visitor_radio)
+            home_name = extract_team(home_radio)
+            if not visitor_name or not home_name:
+                continue
+
+            selected = visitor_name if visitor_radio.has_attr("checked") else home_name if home_radio.has_attr("checked") else ""
+            if not selected:
+                continue
+
+            points_value: Optional[int] = None
+            points_input = row.find(
+                "input",
+                attrs={
+                    "name": re.compile(r"(pt|point)", re.IGNORECASE),
+                },
+            )
+            if points_input:
+                value = points_input.get("value")
+                if value and value.strip().isdigit():
+                    points_value = int(value.strip())
+
+            key = (canonicalize_label(visitor_name), canonicalize_label(home_name))
+            results[key] = ExistingGamePick(
+                visitor=visitor_name,
+                home=home_name,
+                selected=selected,
+                points=points_value,
+            )
 
     # Attempt to find tie-breaker input values
     tie_inputs = soup.find_all(
         "input",
         attrs={
-            "name": re.compile(r"(tie|tb|mnf)", re.IGNORECASE),
+            "name": re.compile(r"^(tiebreaker|tie|tb|mnf)$", re.IGNORECASE),
         },
     )
     for tie_input in tie_inputs:
@@ -1594,18 +1787,35 @@ def parse_existing_picks_html(html: str) -> ExistingSubmission:
 
     if tie_breaker_value is None:
         tie_cell = soup.find(
-            lambda tag: tag.name == "td"
-            and tag.get_text(strip=True).lower().startswith("monday")
+            lambda tag: tag.name in ("td", "section", "h2", "p")
+            and "monday" in tag.get_text(strip=True).lower()
         )
         if tie_cell:
-            # Look for next cell with digits
-            next_td = tie_cell.find_next("td")
-            if next_td:
-                digits = re.findall(r"\d+", next_td.get_text())
-                if digits:
-                    tie_breaker_value = int(digits[0])
+            next_input = tie_cell.find_next("input")
+            if next_input and next_input.get("value", "").strip().isdigit():
+                tie_breaker_value = int(next_input.get("value").strip())
 
-    return ExistingSubmission(picks=list(results.values()), tie_breaker=tie_breaker_value)
+    # Attempt to find suicide pick
+    suicide_select = soup.find("select", attrs={"name": re.compile(r"^suicide$", re.IGNORECASE)})
+    if suicide_select:
+        for opt in suicide_select.find_all("option"):
+            if opt.has_attr("selected"):
+                val = opt.get("value") or opt.get_text(strip=True)
+                if val and val != "Select One":
+                    suicide_pick = val
+                    break
+        if not suicide_pick:
+            options = suicide_select.find_all("option")
+            if options:
+                first_val = options[0].get("value") or options[0].get_text(strip=True)
+                if first_val and first_val.strip() != "Select One":
+                    suicide_pick = first_val.strip()
+
+    return ExistingSubmission(
+        picks=list(results.values()),
+        tie_breaker=tie_breaker_value,
+        suicide=suicide_pick,
+    )
 
 
 def fetch_existing_submission(
@@ -1625,18 +1835,113 @@ def fetch_existing_submission(
     return parse_existing_picks_html(response.text)
 
 
+def extract_card_matchups_from_html(html: str) -> List[Tuple[str, str]]:
+    """Extract (visitor, home) pairs for each game on the make_week card."""
+    soup = BeautifulSoup(html, "html.parser")
+    matchups: List[Tuple[str, str]] = []
+
+    game_elements = soup.find_all(class_=re.compile(r"\bgame\b"))
+    if game_elements:
+        for game in game_elements:
+            vis_name = ""
+            home_name = ""
+            team_labels = game.select("label.team")
+            for t in team_labels:
+                side_el = t.select_one(".side")
+                name_el = t.select_one(".name")
+                side_text = side_el.get_text(strip=True).lower() if side_el else ""
+                t_name = name_el.get_text(strip=True) if name_el else ""
+                if "visitor" in side_text or "away" in side_text:
+                    vis_name = t_name
+                elif "home" in side_text:
+                    home_name = t_name
+
+            if not vis_name or not home_name:
+                matchup = game.get("data-matchup") or ""
+                parts = matchup.split(" at ")
+                if len(parts) == 2:
+                    vis_name = vis_name or parts[0].strip()
+                    home_name = home_name or parts[1].strip()
+
+            if vis_name and home_name:
+                matchups.append((vis_name, home_name))
+    else:
+        for row in soup.find_all("tr"):
+            radios = row.find_all("input", attrs={"type": "radio"})
+            if len(radios) < 2:
+                continue
+
+            def extract_team(radio_tag: Any) -> str:
+                cell = radio_tag.find_parent("td")
+                if not cell:
+                    return ""
+                row_el = cell.find_parent("tr")
+                if not row_el:
+                    return ""
+                cells = row_el.find_all("td")
+                try:
+                    idx = cells.index(cell)
+                except ValueError:
+                    return ""
+
+                for pos in range(idx + 1, len(cells)):
+                    candidate = cells[pos]
+                    text = candidate.get_text(strip=True)
+                    classes = candidate.get("class") or []
+                    if text and "lineitem" in classes:
+                        return text
+                for pos in range(idx + 1, len(cells)):
+                    candidate = cells[pos]
+                    text = candidate.get_text(strip=True)
+                    if text:
+                        return text
+                return ""
+
+            vis_name = extract_team(radios[0])
+            home_name = extract_team(radios[1])
+            if vis_name and home_name:
+                matchups.append((vis_name, home_name))
+
+    return matchups
+
+
+def fetch_card_matchups(
+    *,
+    session: requests.Session,
+    week: int,
+    login_id: Optional[str] = None,
+    login_key: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    params = {"week": week}
+    if login_id:
+        params["i"] = login_id
+    if login_key:
+        params["k"] = login_key
+    try:
+        response = session.get(MAKE_WEEK_URL, params=params, timeout=15)
+        response.raise_for_status()
+        return extract_card_matchups_from_html(response.text)
+    except Exception as exc:
+        logging.debug("Could not fetch card matchups from site: %s", exc)
+        return []
+
+
 def summarize_existing_comparison(
     picks: List[Pick],
     existing_submission: ExistingSubmission,
     *,
     monday_summary: MondaySummary,
+    suicide_team: Optional[str] = None,
 ) -> str:
     existing = existing_submission.picks
     if not existing:
         tie_note = ""
         if existing_submission.tie_breaker is not None:
             tie_note = f" (tie-breaker total {existing_submission.tie_breaker})"
-        return f"Existing comparison: no current picks found on the site{tie_note}."
+        sui_note = ""
+        if existing_submission.suicide:
+            sui_note = f" (suicide pick: {existing_submission.suicide})"
+        return f"Existing comparison: no current game picks found on the site{tie_note}{sui_note}."
 
     diffs: List[str] = []
 
@@ -1733,7 +2038,16 @@ def summarize_existing_comparison(
         diffs.append(
             f"- Site total {existing_tie}, computed total {script_tie}."
         )
-    
+
+    if suicide_team and existing_submission.suicide:
+        existing_sui_aliases = aliases_from_label(existing_submission.suicide) | {canonicalize_label(existing_submission.suicide)}
+        target_sui_aliases = aliases_from_label(suicide_team) | {canonicalize_label(suicide_team)}
+        if not (existing_sui_aliases & target_sui_aliases):
+            diffs.append("Suicide pick:")
+            diffs.append(
+                f"- Site has {existing_submission.suicide}, script selects {suicide_team}."
+            )
+
     if not diffs:
         return (
             "Existing comparison: site picks match the computed selections "
@@ -1755,6 +2069,7 @@ def submit_picks_via_selenium(
     driver_path: Optional[str],
     headless: bool,
     pause_after: bool,
+    suicide_team: Optional[str] = None,
 ) -> None:
     try:
         from selenium import webdriver
@@ -1859,37 +2174,69 @@ def submit_picks_via_selenium(
         target_url = f"{MAKE_WEEK_URL}?{urlencode(params)}"
         driver.get(target_url)
 
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+        wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "form#theForm, form[name='theForm'], .game, table")
+            )
+        )
 
-        rows = driver.find_elements(By.XPATH, "//tr[td/input[@type='radio']]")
+        game_elements = driver.find_elements(By.CSS_SELECTOR, ".game")
         games = []
-        for row in rows:
-            radios = row.find_elements(By.XPATH, ".//input[@type='radio']")
-            if len(radios) < 2:
-                continue
 
-            tds = row.find_elements(By.TAG_NAME, "td")
-            if len(tds) < 6:
-                continue
+        if game_elements:
+            for game_el in game_elements:
+                team_labels = game_el.find_elements(By.CSS_SELECTOR, "label.team")
+                teams = []
+                for t_label in team_labels:
+                    name_elements = t_label.find_elements(By.CSS_SELECTOR, ".name")
+                    radio_elements = t_label.find_elements(By.CSS_SELECTOR, "input[type='radio']")
+                    if name_elements and radio_elements:
+                        teams.append({
+                            "name": name_elements[0].text.strip(),
+                            "radio": radio_elements[0],
+                            "label": t_label,
+                        })
+                if not teams:
+                    radios = game_el.find_elements(By.CSS_SELECTOR, "input[type='radio']")
+                    matchup = game_el.get_attribute("data-matchup") or ""
+                    parts = matchup.split(" at ")
+                    if len(radios) >= 2 and len(parts) == 2:
+                        teams.append({"name": parts[0].strip(), "radio": radios[0]})
+                        teams.append({"name": parts[1].strip(), "radio": radios[1]})
 
-            visitor_name = tds[2].text.strip()
-            home_name = tds[5].text.strip()
-            teams = []
-            if visitor_name:
-                teams.append({"name": visitor_name, "radio": radios[0]})
-            if home_name:
-                teams.append({"name": home_name, "radio": radios[1]})
+                if teams:
+                    pts_inputs = game_el.find_elements(By.CSS_SELECTOR, ".pts-field input, input[name^='pts']")
+                    pts_input = pts_inputs[0] if pts_inputs else None
+                    games.append({"row": game_el, "teams": teams, "pts_input": pts_input})
+        else:
+            rows = driver.find_elements(By.XPATH, "//tr[td/input[@type='radio']]")
+            for row in rows:
+                radios = row.find_elements(By.XPATH, ".//input[@type='radio']")
+                if len(radios) < 2:
+                    continue
 
-            if teams:
-                games.append({"row": row, "teams": teams})
+                tds = row.find_elements(By.TAG_NAME, "td")
+                if len(tds) < 6:
+                    continue
+
+                visitor_name = tds[2].text.strip()
+                home_name = tds[5].text.strip()
+                teams = []
+                if visitor_name:
+                    teams.append({"name": visitor_name, "radio": radios[0]})
+                if home_name:
+                    teams.append({"name": home_name, "radio": radios[1]})
+
+                if teams:
+                    games.append({"row": row, "teams": teams, "pts_input": None})
 
         if not games:
-            raise RuntimeError("Unable to locate pick rows on the make_week page.")
+            raise RuntimeError("Unable to locate pick rows/games on the make_week page.")
 
         radio_lookup: Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]] = {}
         for game in games:
             for team in game["teams"]:
-                aliases = aliases_from_label(team["name"]) | {canonicalize_label(team["name"]) }
+                aliases = aliases_from_label(team["name"]) | {canonicalize_label(team["name"])}
                 for key in aliases:
                     if key:
                         radio_lookup.setdefault(key, []).append((game, team))
@@ -1913,21 +2260,43 @@ def submit_picks_via_selenium(
             radio_element = team_entry["radio"]
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", radio_element)
             if not radio_element.is_selected():
-                radio_element.click()
+                try:
+                    radio_element.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", radio_element)
 
-            row = game_entry["row"]
             points_str = str(pick.points)
-            # Attempt to set confidence points if there is an editable field.
-            try:
-                points_input = row.find_element(By.XPATH, ".//input[contains(@name, 'pt') or contains(@name, 'point')]")
-                points_input.clear()
-                points_input.send_keys(points_str)
-            except NoSuchElementException:
+            points_input = game_entry.get("pts_input")
+            if not points_input:
+                row = game_entry["row"]
+                try:
+                    points_input = row.find_element(By.XPATH, ".//input[contains(@name, 'pt') or contains(@name, 'point')]")
+                except NoSuchElementException:
+                    pass
+
+            if points_input:
+                try:
+                    points_input.clear()
+                    points_input.send_keys(points_str)
+                    driver.execute_script(
+                        "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+                        "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                        points_input,
+                    )
+                except Exception:
+                    driver.execute_script(
+                        "arguments[0].value = arguments[1];"
+                        "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+                        "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                        points_input,
+                        points_str,
+                    )
+            else:
+                row = game_entry["row"]
                 try:
                     points_select = row.find_element(By.XPATH, ".//select[contains(@name, 'pt') or contains(@name, 'point')]")
                     Select(points_select).select_by_value(points_str)
                 except NoSuchElementException:
-                    # Fall back to attempting to edit a contentEditable cell if present.
                     try:
                         points_cell = row.find_element(By.XPATH, ".//td[contains(@class, 'linepts')]")
                         if points_cell.get_attribute("contenteditable") == "true":
@@ -1945,11 +2314,11 @@ def submit_picks_via_selenium(
         if tie_breaker_value is not None:
             tb_set = False
             tb_candidates = [
+                "tiebreaker",
                 "tb",
                 "mnf",
                 "tie",
                 "tie_breaker",
-                "tiebreaker",
                 "monday",
                 "mnf_total",
             ]
@@ -1958,6 +2327,11 @@ def submit_picks_via_selenium(
                     tb_input = driver.find_element(By.NAME, name)
                     tb_input.clear()
                     tb_input.send_keys(str(tie_breaker_value))
+                    driver.execute_script(
+                        "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+                        "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                        tb_input,
+                    )
                     tb_set = True
                     break
                 except NoSuchElementException:
@@ -1971,18 +2345,58 @@ def submit_picks_via_selenium(
                     )
                     tb_input.clear()
                     tb_input.send_keys(str(tie_breaker_value))
+                    driver.execute_script(
+                        "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+                        "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                        tb_input,
+                    )
                     tb_set = True
                 except NoSuchElementException:
                     logging.debug("Could not locate an input for the Monday tie-breaker.")
+
+        # Handle Suicide Pick
+        try:
+            suicide_elements = driver.find_elements(By.NAME, "suicide")
+            if suicide_elements:
+                suicide_select = Select(suicide_elements[0])
+                target_team = suicide_team
+                if not target_team and picks:
+                    target_team = picks[0].selected_team.get("displayName", "")
+
+                if target_team:
+                    target_aliases = set(aliases_from_label(target_team)) | {canonicalize_label(target_team)}
+                    chosen_val = None
+                    for opt in suicide_select.options:
+                        val = opt.get_attribute("value") or opt.text
+                        if not val or val in ("Select One", ""):
+                            continue
+                        opt_aliases = set(aliases_from_label(val)) | {canonicalize_label(val)}
+                        if target_aliases & opt_aliases:
+                            chosen_val = val
+                            break
+
+                    if chosen_val:
+                        suicide_select.select_by_value(chosen_val)
+                        driver.execute_script(
+                            "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                            suicide_elements[0],
+                        )
+                        logging.info("Selected suicide pick: %s", chosen_val)
+                    else:
+                        logging.warning("Could not match suicide team '%s' to dropdown options.", target_team)
+        except Exception as exc:
+            logging.warning("Failed to select suicide pick: %s", exc)
 
         submit_clicked = False
         submit_button = None
         found_xpath = None
         submit_xpaths = [
+            "//button[contains(@class, 'btn--save')]",
+            "//button[@type='submit']",
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'save')]",
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'submit')]",
             "//input[@type='submit']",
             "//input[@type='image']",
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'submit')]",
-            "//button[contains(.,'Save')]",
             "/html/body/table/tbody/tr[2]/td[1]/input[1]",
         ]
         for xpath in submit_xpaths:
@@ -2036,6 +2450,16 @@ def submit_picks_via_selenium(
             
             if not refound:
                 raise RuntimeError("Submit button stale and could not be re-acquired.")
+
+        # Check if client-side validation failed
+        try:
+            error_panel = driver.find_element(By.ID, "errors")
+            if error_panel.is_displayed():
+                items = [item.text for item in error_panel.find_elements(By.CSS_SELECTOR, "li") if item.text]
+                if items:
+                    raise RuntimeError(f"Client-side validation blocked submit: {', '.join(items)}")
+        except NoSuchElementException:
+            pass
 
         try:
             wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
@@ -2202,22 +2626,29 @@ def submit_playoff_picks_via_selenium(
                     logging.error("Could not find O/U radio for %s (val=%s)", slot.over_radio_name, ou_val)
 
         # Submit
-        # Look for image input or submit button
-        # The playoff form has <input type=image src="/images/submit_red.gif" border=0>
         submit_clicked = False
-        try:
-            submit_btn = driver.find_element(By.XPATH, "//input[@type='image' and contains(@src, 'submit')]")
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_btn)
-            submit_btn.click()
-            submit_clicked = True
-        except NoSuchElementException:
-            # Fallback
+        playoff_submit_xpaths = [
+            "//button[contains(@class, 'btn--save')]",
+            "//button[@type='submit']",
+            "//input[@type='image' and contains(@src, 'submit')]",
+            "//input[@type='submit']",
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'save')]",
+        ]
+        for xpath in playoff_submit_xpaths:
             try:
-                submit_btn = driver.find_element(By.XPATH, "//input[@type='submit']")
-                submit_btn.click()
+                submit_btn = driver.find_element(By.XPATH, xpath)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_btn)
+                try:
+                    driver.execute_script("arguments[0].click();", submit_btn)
+                except Exception:
+                    submit_btn.click()
                 submit_clicked = True
+                break
             except NoSuchElementException:
-                logging.error("Could not find submit button on playoff page.")
+                continue
+
+        if not submit_clicked:
+            logging.error("Could not find submit button on playoff page.")
 
         if submit_clicked:
              try:
@@ -2387,11 +2818,44 @@ def main() -> None:
     # ---------------------------------------------------------
     # REGULAR SEASON LOGIC (Weeks 1-18)
     # ---------------------------------------------------------
+    login_id = args.login_id or os.environ.get("FTN_USER_ID")
+    login_key = args.login_key or os.environ.get("FTN_KEY")
+
+    card_matchups = fetch_card_matchups(
+        session=session,
+        week=args.week,
+        login_id=login_id,
+        login_key=login_key,
+    )
+
     scoreboard = fetch_json(
         SCOREBOARD_URL,
         params={"dates": season, "seasontype": 2, "week": args.week},
         session=session,
     )
+
+    if card_matchups:
+        logging.info("Filtering ESPN events to match %d card games on make_week.", len(card_matchups))
+        filtered_events = []
+        for ev in scoreboard.get("events", []):
+            comp = ev.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+            away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+            if not home or not away:
+                continue
+            h_aliases = set(generate_team_aliases(home["team"]))
+            a_aliases = set(generate_team_aliases(away["team"]))
+            matched = False
+            for vis_c, home_c in card_matchups:
+                vis_norm = canonicalize_label(vis_c)
+                home_norm = canonicalize_label(home_c)
+                if (vis_norm in a_aliases and home_norm in h_aliases) or (vis_norm in h_aliases and home_norm in a_aliases):
+                    matched = True
+                    break
+            if matched:
+                filtered_events.append(ev)
+        scoreboard["events"] = filtered_events
 
     events_info = collect_scoreboard_events(scoreboard)
 
@@ -2517,10 +2981,12 @@ def main() -> None:
                     login_id=compare_login_id,
                     login_key=compare_key,
                 )
+                initial_suicide = args.suicide_team or (picks[0].selected_team.get("displayName") if picks else None)
                 comparison = summarize_existing_comparison(
                     picks,
                     existing_submission,
                     monday_summary=monday_summary,
+                    suicide_team=initial_suicide,
                 )
                 print()
                 print(comparison)
@@ -2530,23 +2996,42 @@ def main() -> None:
                 logging.error("Failed to fetch existing site picks: %s", exc)
 
     tie_breaker_override: Optional[int] = None
+    suicide_override: Optional[str] = None
     if not args.non_interactive:
         print()
-        picks, tie_breaker_override = interactive_adjustments(picks, monday_summary)
+        picks, tie_breaker_override, suicide_override = interactive_adjustments(
+            picks, monday_summary, initial_suicide=args.suicide_team
+        )
         monday_summary = build_monday_summary(picks)
         print("\nFinal picks:")
         print(render_pick_table(picks))
         print()
         print(format_monday_summary(monday_summary, tie_breaker_override))
+        if suicide_override:
+            print(f"Suicide pick: {suicide_override}")
     else:
         tie_breaker_override = None
+        suicide_override = args.suicide_team
 
     if tie_breaker_override is not None:
         logging.info("Using custom Monday tie-breaker total: %s", tie_breaker_override)
 
     final_tie_breaker = (
-        tie_breaker_override if tie_breaker_override is not None else monday_summary.computed_pick
+        tie_breaker_override
+        if tie_breaker_override is not None
+        else (args.tie_breaker if args.tie_breaker is not None else monday_summary.computed_pick)
     )
+    if final_tie_breaker is None:
+        if monday_summary.combined_total is not None:
+            final_tie_breaker = round_half_up(monday_summary.combined_total)
+        else:
+            final_tie_breaker = 45
+            logging.warning("No Monday tie-breaker total available; defaulting to %s.", final_tie_breaker)
+    final_suicide = (
+        suicide_override or args.suicide_team or (picks[0].selected_team.get("displayName") if picks else None)
+    )
+    if final_suicide:
+        logging.info("Using Suicide pick: %s", final_suicide)
 
     should_submit = args.submit
     if not should_submit and not args.non_interactive:
@@ -2582,6 +3067,7 @@ def main() -> None:
                 driver_path=args.selenium_driver_path,
                 headless=not args.selenium_no_headless,
                 pause_after=args.selenium_pause_after,
+                suicide_team=final_suicide,
             )
             print("Submission attempted. Please verify the picks on the site to confirm.")
 
@@ -2599,6 +3085,7 @@ def main() -> None:
                         picks,
                         refreshed,
                         monday_summary=build_monday_summary(picks),
+                        suicide_team=final_suicide,
                     )
                     print()
                     print("Post-submission check:")

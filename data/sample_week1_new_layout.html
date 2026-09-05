@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week 2 Picks &middot; Sunday Golf</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:wght@400;500;600;700&family=Saira+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --turf:#118A4E; --turf-deep:#0B6B3C; --lime:#C8F24E; --sun:#FFC733;
+  --tang:#FF6B35; --sky:#35B6E8; --grape:#8B5CF6;
+  --card:#FFFDF6; --paper:#FFF4DC; --ink:#16302A; --ink-soft:#5E7A6B; --rule:#E7DFC7;
+  --stripe:linear-gradient(90deg,var(--turf) 0 20%,var(--lime) 20% 40%,var(--sun) 40% 60%,var(--tang) 60% 80%,var(--sky) 80% 100%);
+  --display:"Saira Condensed",Impact,"Arial Narrow",sans-serif;
+  --body:"Public Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  --gap:clamp(16px,3vw,28px);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font:400 16px/1.55 var(--body)}
+img{max-width:100%;height:auto;display:block}
+a{color:var(--turf-deep)}
+a:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--grape);outline-offset:2px}
+.wrap{max-width:900px;margin-inline:auto;padding-inline:clamp(14px,4vw,32px)}
+
+.masthead{background:var(--stripe) top/100% 7px no-repeat,var(--card);border-bottom:1px solid var(--rule)}
+.masthead .wrap{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding-block:20px 16px}
+.logo{width:min(100%,340px)}
+.backlink{font:500 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;text-decoration:none}
+.backlink:hover{color:var(--tang)}
+
+main{padding-block:var(--gap) 0}
+.board{background:var(--turf);color:#fff;border-radius:6px;padding:clamp(16px,3vw,24px);
+  display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px}
+.board h1{margin:0;font:700 clamp(30px,7vw,46px)/.95 var(--display);letter-spacing:.03em;text-transform:uppercase}
+.board .date{margin:.4rem 0 0;font:500 11px/1.4 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--lime)}
+.print{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;background:var(--lime);
+  color:var(--turf-deep);border-radius:999px;text-decoration:none;
+  font:600 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.print:hover{background:#fff}
+
+/* points board */
+.ptsboard{margin-top:var(--gap);background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:16px 18px}
+.ptsboard h2{margin:0 0 4px;font:600 16px/1.2 var(--display);letter-spacing:.06em;text-transform:uppercase;color:var(--turf-deep)}
+.ptsboard p{margin:0 0 12px;font:400 12px/1.5 var(--mono);letter-spacing:.04em;color:var(--ink-soft)}
+.chips{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.chip{min-width:38px;padding:8px 4px;text-align:center;border-radius:5px;background:#EAF8F0;
+  border:1px solid #BFE3CE;color:var(--turf-deep);font:600 15px/1 var(--mono)}
+.chip.used{background:#F2EFE2;border-color:var(--rule);color:#A9B3A5;text-decoration:line-through}
+.chip.dup{background:var(--tang);border-color:#D8471A;color:#fff;text-decoration:none}
+
+.day{display:flex;align-items:center;gap:12px;margin:calc(var(--gap) + 4px) 0 10px;
+  font:500 11px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ink-soft)}
+.day::after{content:"";flex:1;height:1px;background:var(--rule)}
+
+.games{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.game{background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:10px;
+  display:grid;gap:8px;grid-template-columns:70px minmax(0,1fr);
+  grid-template-areas:"pts away" "pts home"}
+@media (min-width:700px){
+  .game{grid-template-columns:84px minmax(0,1fr) minmax(0,1fr);
+        grid-template-areas:"pts away home";align-items:center}
+}
+.game.picked{border-color:#BFE3CE}
+
+.pts-field{grid-area:pts;display:flex;flex-direction:column;justify-content:center;gap:4px}
+.pts-lbl{font:500 9px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-soft);text-align:center}
+.pts-field input{width:100%;min-height:52px;border:2px solid var(--rule);border-radius:5px;
+  background:#fff;text-align:center;font:600 22px/1 var(--mono);color:var(--turf-deep);
+  padding:0;-moz-appearance:textfield}
+.pts-field input::-webkit-outer-spin-button,.pts-field input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.pts-field input:focus{border-color:var(--sky)}
+.pts-field input.dup{border-color:var(--tang);background:#FFF1ED;color:#AF3419}
+
+.team{position:relative;display:block;cursor:pointer}
+.game > .team:nth-of-type(1){grid-area:away}
+.game > .team:nth-of-type(2){grid-area:home}
+.team input{position:absolute;opacity:0;width:1px;height:1px}
+.team-in{display:flex;align-items:center;gap:10px;padding:9px 12px 9px 10px;
+  border:2px solid var(--rule);border-radius:5px;background:#fff;min-height:60px}
+.team:hover .team-in{border-color:var(--sky)}
+.dot{flex:none;width:20px;height:20px;border:2px solid var(--rule);border-radius:50%;background:#fff}
+.team img{flex:none;width:40px;height:40px;object-fit:contain}
+.team-txt{flex:1;min-width:0}
+.side{display:block;font:400 9px/1.3 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-soft)}
+.name{display:block;font-weight:700;font-size:15px;line-height:1.25}
+.team input:checked + .team-in{border-color:var(--turf);background:#EAF8F0}
+.team input:checked + .team-in .dot{background:var(--turf);border-color:var(--turf);display:grid;place-items:center}
+.team input:checked + .team-in .dot::after{content:"";width:9px;height:5px;
+  border-left:2.5px solid #fff;border-bottom:2.5px solid #fff;transform:rotate(-45deg) translate(1px,-1px)}
+.team input:checked + .team-in .side{color:var(--turf);font-weight:600}
+.team input:focus-visible + .team-in{outline:3px solid var(--grape);outline-offset:2px}
+
+.extras{margin-top:var(--gap);display:grid;gap:var(--gap)}
+@media (min-width:700px){.extras{grid-template-columns:1fr 1fr}}
+.xcard{background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:16px 18px}
+.xcard--tie{background:#E1F3FC;border-color:#AFDCF2}
+.xcard--sui{background:var(--sun);border-color:#E8A800}
+.xcard h2{margin:0 0 2px;font:600 16px/1.2 var(--display);letter-spacing:.06em;text-transform:uppercase;color:var(--turf-deep)}
+.xcard p{margin:0 0 12px;font:400 12px/1.5 var(--mono);letter-spacing:.04em;color:var(--ink-soft)}
+.xcard--sui p{color:#7A5A00}
+.xcard input,.xcard select{width:100%;min-height:52px;border:2px solid var(--rule);border-radius:5px;
+  background:#fff;padding:0 12px;font:600 17px var(--mono);color:var(--turf-deep)}
+.xcard input{-moz-appearance:textfield}
+.xcard input::-webkit-outer-spin-button,.xcard input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+
+.errors{margin-top:var(--gap);background:#FFF1ED;border:2px solid var(--tang);
+  border-radius:6px;padding:16px 18px}
+.errors:focus{outline:3px solid var(--grape);outline-offset:2px}
+.errors h2{margin:0 0 10px;font:700 18px/1.2 var(--display);letter-spacing:.05em;
+  text-transform:uppercase;color:#AF3419}
+.errors ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.jump{appearance:none;border:0;background:none;cursor:pointer;text-align:left;width:100%;
+  padding:8px 0 8px 20px;position:relative;color:#8F2A12;font:500 14px/1.4 var(--body)}
+.jump::before{content:"\2192";position:absolute;left:0;font-family:var(--mono);color:var(--tang)}
+.jump:hover{color:var(--tang);text-decoration:underline}
+.game.has-error{border-color:var(--tang);background:#FFF7F4;box-shadow:inset 4px 0 0 var(--tang)}
+.game{scroll-margin-block:90px}
+.pts-field input.bad{border-color:var(--tang);background:#FFF1ED;color:#AF3419}
+.note{margin:var(--gap) 0 0;max-width:62ch;color:#2C4038;font-size:14px}
+
+.savebar{position:sticky;bottom:0;margin-top:var(--gap);background:var(--card);
+  border-top:3px solid var(--turf);box-shadow:0 -6px 18px rgba(22,48,42,.10)}
+.savebar .wrap{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding-block:12px}
+.status{margin:0;font:500 11px/1.5 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft)}
+.status.warn{color:#AF3419}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-left:auto}
+.btn{appearance:none;cursor:pointer;min-height:50px;padding:0 22px;border-radius:999px;
+  font:700 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.btn--save{border:0;background:var(--tang);color:#fff}
+.btn--save:hover{background:#E8551F}
+.btn--craps{border:2px solid var(--grape);background:#fff;color:#6D28D9}
+.btn--craps:hover{background:var(--grape);color:#fff}
+
+footer{background:var(--stripe) top/100% 5px no-repeat,var(--card);border-top:1px solid var(--rule)}
+footer .wrap{padding-block:24px 20px;font:500 11px/1.6 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media print{
+  .masthead,.savebar,footer,.print,.ptsboard{display:none}
+  body{background:#fff}
+  .game{break-inside:avoid;border-color:#999}
+  .board{background:#fff;color:#000;border:2px solid #000}
+  .board .date{color:#000}
+}
+</style>
+</head>
+
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+    <img class="logo" src="/images/fantasy_logo.gif" width="700" height="70" alt="Sunday Golf">
+    <a class="backlink" href="menu?i=kjk711&k=g3cyq7dllb">&larr; Back to menu</a>
+  </div>
+</header>
+
+<form action="post_picks" method="post" name="theForm" id="theForm">
+  <input type="hidden" name="craps" id="craps" value="no">
+  <input type="hidden" name="week" value="1">
+  <input type="hidden" name="i" value="kjk711">
+  <input type="hidden" name="k" value="g3cyq7dllb">
+  <input type="hidden" name="num_games" value="14">
+
+<main>
+  <div class="wrap">
+
+    <div class="board">
+      <div>
+        <h1>Week 1</h1>
+        <p class="date"><<date>></p>
+      </div>
+      <a class="print" href="make_week_printer?week=1&i=kjk711&k=g3cyq7dllb">Print this form</a>
+    </div>
+
+    <div class="errors" id="errors" role="alert" tabindex="-1" hidden></div>
+
+    <section class="ptsboard" aria-labelledby="pb-h">
+      <h2 id="pb-h">Points board</h2>
+      <p id="pb-hint">Assign each number once.</p>
+      <ul class="chips" id="chips"></ul>
+    </section>
+	<h2 class="day">Sunday September 13, 2026</h2>
+<ul class="games">
+      <li class="game" data-game="gm1" data-matchup="Carolina at Chicago">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts1">Pts</label>
+          <input id="pts1" name="pts1" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Carolina at Chicago">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm1" value="G3570PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/panthers.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Carolina</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm1" value="G3570PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/bears.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Chicago</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm2" data-matchup="Cincinnati at Tampa Bay">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts2">Pts</label>
+          <input id="pts2" name="pts2" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Cincinnati at Tampa Bay">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm2" value="G3571PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/bengals.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Cincinnati</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm2" value="G3571PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/bucs.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Tampa Bay</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm3" data-matchup="Detroit at New Orleans">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts3">Pts</label>
+          <input id="pts3" name="pts3" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Detroit at New Orleans">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm3" value="G3572PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/lions.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Detroit</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm3" value="G3572PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/saints.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">New Orleans</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm4" data-matchup="Houston at Buffalo">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts4">Pts</label>
+          <input id="pts4" name="pts4" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Houston at Buffalo">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm4" value="G3573PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/texans.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Houston</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm4" value="G3573PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/bills.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Buffalo</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm5" data-matchup="Indianapolis at Baltimore">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts5">Pts</label>
+          <input id="pts5" name="pts5" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Indianapolis at Baltimore">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm5" value="G3574PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/colts.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Indianapolis</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm5" value="G3574PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/ravens.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Baltimore</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm6" data-matchup="Jacksonville at Cleveland">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts6">Pts</label>
+          <input id="pts6" name="pts6" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Jacksonville at Cleveland">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm6" value="G3575PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/jaguars.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Jacksonville</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm6" value="G3575PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/browns.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Cleveland</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm7" data-matchup="Pittsburgh at Atlanta">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts7">Pts</label>
+          <input id="pts7" name="pts7" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Pittsburgh at Atlanta">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm7" value="G3576PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/steelers.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Pittsburgh</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm7" value="G3576PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/falcons.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Atlanta</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm8" data-matchup="Tennessee at NY Jets">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts8">Pts</label>
+          <input id="pts8" name="pts8" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Tennessee at NY Jets">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm8" value="G3577PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/titans.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Tennessee</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm8" value="G3577PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/jets.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">NY Jets</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm9" data-matchup="LA Chargers at Arizona">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts9">Pts</label>
+          <input id="pts9" name="pts9" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for LA Chargers at Arizona">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm9" value="G3578PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/chargers.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">LA Chargers</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm9" value="G3578PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/cardinals.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Arizona</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm10" data-matchup="Las Vegas at Miami">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts10">Pts</label>
+          <input id="pts10" name="pts10" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Las Vegas at Miami">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm10" value="G3579PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/raiders.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Las Vegas</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm10" value="G3579PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/dolphins.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Miami</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm11" data-matchup="Minnesota at Green Bay">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts11">Pts</label>
+          <input id="pts11" name="pts11" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Minnesota at Green Bay">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm11" value="G3580PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/vikings.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Minnesota</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm11" value="G3580PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/packers.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Green Bay</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm12" data-matchup="Philadelphia at Washington">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts12">Pts</label>
+          <input id="pts12" name="pts12" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Philadelphia at Washington">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm12" value="G3581PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/eagles.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Philadelphia</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm12" value="G3581PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/redskins.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Washington</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<ul class="games">
+      <li class="game" data-game="gm13" data-matchup="NY Giants at Dallas">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts13">Pts</label>
+          <input id="pts13" name="pts13" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for NY Giants at Dallas">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm13" value="G3582PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/giants.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">NY Giants</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm13" value="G3582PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/cowboys.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Dallas</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+<h2 class="day">Monday September 14, 2026</h2>
+<ul class="games">
+      <li class="game" data-game="gm14" data-matchup="Kansas City at Denver">
+        <span class="pts-field">
+          <label class="pts-lbl" for="pts14">Pts</label>
+          <input id="pts14" name="pts14" type="number" inputmode="numeric"
+                 min="1" max="16" step="1" value="" autocomplete="off"
+                 aria-label="Points for Kansas City at Denver">
+        </span>
+        <label class="team">
+          <input type="radio" name="gm14" value="G3583PV" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/chiefs.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Visitor</span><span class="name">Kansas City</span></span>
+          </span>
+        </label>
+        <label class="team">
+          <input type="radio" name="gm14" value="G3583PH" >
+          <span class="team-in">
+            <span class="dot" aria-hidden="true"></span>
+            <img src="/images/broncos.gif" alt="" width="40" height="40">
+            <span class="team-txt"><span class="side">Home</span><span class="name">Denver</span></span>
+          </span>
+        </label>
+      </li>
+    </ul>
+
+
+
+    <div class="extras">
+	    <section class="xcard xcard--tie" aria-labelledby="tb-h">
+        <h2 id="tb-h">Monday Night Tie-Breaker</h2>
+        <p>Kansas City at Denver</p>
+        <input name="tiebreaker" type="number" inputmode="numeric" min="0" step="1"
+               value="" autocomplete="off" aria-labelledby="tb-h">
+      </section>
+
+
+	      <section class="xcard xcard--sui" aria-labelledby="su-h">
+        <h2 id="su-h">Suicide Pick</h2>
+        <p>One team, straight up</p>
+        <select name="suicide" aria-labelledby="su-h">
+          <option value="Select One">Select One</option>
+		 <option value="Arizona">Arizona</option>
+ <option value="Atlanta">Atlanta</option>
+ <option value="Baltimore">Baltimore</option>
+ <option value="Buffalo">Buffalo</option>
+ <option value="Carolina">Carolina</option>
+ <option value="Chicago">Chicago</option>
+ <option value="Cincinnati">Cincinnati</option>
+ <option value="Cleveland">Cleveland</option>
+ <option value="Dallas">Dallas</option>
+ <option value="Denver">Denver</option>
+ <option value="Detroit">Detroit</option>
+ <option value="Green Bay">Green Bay</option>
+ <option value="Houston">Houston</option>
+ <option value="Indianapolis">Indianapolis</option>
+ <option value="Jacksonville">Jacksonville</option>
+ <option value="Kansas City">Kansas City</option>
+ <option value="LA Chargers">LA Chargers</option>
+ <option value="Las Vegas">Las Vegas</option>
+ <option value="Miami">Miami</option>
+ <option value="Minnesota">Minnesota</option>
+ <option value="NY Giants">NY Giants</option>
+ <option value="NY Jets">NY Jets</option>
+ <option value="New Orleans">New Orleans</option>
+ <option value="Philadelphia">Philadelphia</option>
+ <option value="Pittsburgh">Pittsburgh</option>
+ <option value="Tampa Bay">Tampa Bay</option>
+ <option value="Tennessee">Tennessee</option>
+ <option value="Washington">Washington</option>
+
+        </select>
+      </section>
+
+
+    </div>
+
+    <p class="note">You can change your picks as often as you like up to the cutoff. Nothing is
+    locked in until then.</p>
+
+  </div>
+</main>
+
+<div class="savebar">
+  <div class="wrap">
+    <p class="status" id="status" role="status">0 of 16 picked</p>
+    <div class="actions">
+      <button class="btn btn--craps" type="button" id="crapshoot">Crap Shoot</button>
+      <button class="btn btn--save" type="submit">Save my picks</button>
+    </div>
+  </div>
+</div>
+</form>
+
+<footer>
+  <div class="wrap">Sunday Golf &middot; Run by the Comish</div>
+</footer>
+
+<script>
+/*!
+ * Sunday Golf — weekly picks validation
+ * -------------------------------------------------------------------------
+ * Serves both the regular-season card and the playoff card. Blocks the post
+ * and explains what's wrong when:
+ *   - a game has no winner picked
+ *   - a game has any other unanswered choice (the playoff over/under)
+ *   - a game has no points on it            (ranked weeks only)
+ *   - a points value falls outside the range (ranked weeks only)
+ *   - the same points value is used twice    (ranked weeks only)
+ *
+ * Points checking switches itself off when the points inputs are hidden, as
+ * they are in the playoffs where every game is worth a flat 2. Any radio group
+ * inside a .game other than the gmN winner group is treated as required; label
+ * it with data-what on a wrapping element, e.g.
+ *
+ *   <div class="ou" data-what="over/under pick"> ... </div>
+ *
+ * The range is NOT hardcoded. 16 is always the top value and the floor slides
+ * with the number of games, so 15 games runs 16 down to 2 and 16 games runs
+ * 16 down to 1. That is the default and needs no markup at all.
+ *
+ * To override for a week that breaks the pattern, put either or both on the form:
+ *
+ *   <form name="theForm" data-pts-high="16" data-pts-low="1"> ... </form>
+ *
+ * Give only the high and the low derives as high - games + 1. Give only the low
+ * and the high derives as low + games - 1. Give neither and the top is TOP_POINTS
+ * below. If the span and the game count disagree, it warns in the console.
+ *
+ * Markup contract (see week2-entry.html):
+ *   form            name="theForm"
+ *   each game       <li class="game" data-matchup="Buffalo at Detroit">
+ *                     radios name="gm1", points <input> inside .pts-field
+ *   error panel     <div id="errors" hidden role="alert" tabindex="-1">
+ *   points board    <ul id="chips"></ul>  (filled in here)
+ *   hint line       <p id="pb-hint"></p>  (filled in here)
+ *   status line     <p id="status"></p>
+ *   crap shoot      <button id="crapshoot">  + <input type="hidden" id="craps">
+ *
+ * Crap Shoot deliberately skips validation: it calls form.submit(), which does
+ * not fire the submit event.
+ */
+(function () {
+  'use strict';
+
+  /* ---- options ---------------------------------------------------------- */
+  var TOP_POINTS       = 16;     // highest value; the floor slides with game count
+  var REQUIRE_TIEBREAK = true;  // true = also demand the Monday night number
+  var REQUIRE_SUICIDE  = true;  // true = also demand a suicide pick
+
+  var form = document.forms.theForm;
+  if (!form || !form.querySelector('.game')) return;
+
+  /* Our messages, not the browser's bubbles. */
+  form.setAttribute('novalidate', 'novalidate');
+
+  var games   = Array.prototype.slice.call(form.querySelectorAll('.game'));
+  var panel   = document.getElementById('errors');
+  var chipBox = document.getElementById('chips');
+  var hint    = document.getElementById('pb-hint');
+  var status  = document.getElementById('status');
+  var shoot   = document.getElementById('crapshoot');
+  var craps   = document.getElementById('craps');
+  var tie     = form.elements.tiebreaker;
+  var suicide = form.elements.suicide;
+
+  var N    = games.length;
+  var LOW  = parseInt(form.getAttribute('data-pts-low'), 10);
+  var HIGH = parseInt(form.getAttribute('data-pts-high'), 10);
+
+  if (isNaN(HIGH) && isNaN(LOW)) { HIGH = TOP_POINTS; LOW = HIGH - N + 1; }
+  else if (isNaN(LOW))  { LOW  = HIGH - N + 1; }
+  else if (isNaN(HIGH)) { HIGH = LOW + N - 1; }
+
+  if (HIGH - LOW + 1 !== N && window.console && console.warn) {
+    console.warn('Sunday Golf: ' + N + ' games but points run ' + LOW + ' to ' +
+                 HIGH + ' (' + (HIGH - LOW + 1) + ' values). One of them is wrong.');
+  }
+
+  var smooth = !(window.matchMedia &&
+                 window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var live = false;   // switches on after the first blocked submit
+
+  /* ---- set up ----------------------------------------------------------- */
+  function parts(game) {
+    var radios = Array.prototype.slice.call(game.querySelectorAll('input[type=radio]'));
+    var groups = {}, order = [];
+    radios.forEach(function (b) {
+      if (!groups[b.name]) { groups[b.name] = []; order.push(b.name); }
+      groups[b.name].push(b);
+    });
+    return {
+      el:     game,
+      label:  game.getAttribute('data-matchup') || 'this game',
+      names:  order,
+      groups: groups,
+      winner: groups[order.filter(function (n) { return /^gm/.test(n); })[0]] || [],
+      /* hidden points inputs (flat-value playoff weeks) are not validated */
+      pts:    game.querySelector('.pts-field input:not([type=hidden])')
+    };
+  }
+  var rows = games.map(parts);
+  var RANKED = rows.some(function (r) { return !!r.pts; });
+
+  rows.forEach(function (r) {
+    if (!r.pts) { return; }
+    r.pts.min = LOW;
+    r.pts.max = HIGH;
+  });
+
+  if (hint && RANKED) {
+    hint.textContent = 'Use each number from ' + LOW + ' to ' + HIGH +
+      ' once. The surer you are, the more points you put on it.';
+  }
+
+  if (!RANKED) {
+    var board = document.querySelector('.ptsboard');
+    if (board) { board.hidden = true; }
+  }
+
+  if (chipBox && RANKED) {
+    var frag = document.createDocumentFragment();
+    for (var n = LOW; n <= HIGH; n++) {
+      var li = document.createElement('li');
+      li.className = 'chip';
+      li.setAttribute('data-n', n);
+      li.textContent = n;
+      frag.appendChild(li);
+    }
+    chipBox.appendChild(frag);
+  }
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.chip'));
+
+  /* ---- the check -------------------------------------------------------- */
+  function check() {
+    var problems = [];
+    var seen = {};
+
+    rows.forEach(function (r) {
+      r.names.forEach(function (nm) {
+        var set = r.groups[nm];
+        if (set.some(function (b) { return b.checked; })) { return; }
+        var what = 'winner picked';
+        if (!/^gm/.test(nm)) {
+          var wrap = set[0].closest ? set[0].closest('[data-what]') : null;
+          what = wrap ? wrap.getAttribute('data-what') : 'pick';
+        }
+        problems.push({ text: 'No ' + what + ' in ' + r.label,
+                        focus: set[0], row: r, kind: 'pick' });
+      });
+
+      if (!r.pts) { return; }
+      var raw = r.pts.value.trim();
+
+      if (raw === '') {
+        problems.push({ text: 'No points on ' + r.label,
+                        focus: r.pts, row: r, kind: 'pts' });
+        return;
+      }
+
+      var v = Number(raw);
+      if (!/^\d+$/.test(raw) || v < LOW || v > HIGH) {
+        problems.push({ text: r.label + ' has ' + raw + ' — points must be ' +
+                              LOW + ' to ' + HIGH,
+                        focus: r.pts, row: r, kind: 'pts' });
+        return;
+      }
+
+      (seen[v] = seen[v] || []).push(r);
+    });
+
+    Object.keys(seen).forEach(function (v) {
+      var hits = seen[v];
+      if (hits.length < 2) { return; }
+      problems.push({
+        text: v + ' points used on ' + hits.length + ' games: ' +
+              hits.map(function (r) { return r.label; }).join(', '),
+        focus: hits[0].pts,
+        rows: hits,
+        kind: 'dup',
+        value: v
+      });
+    });
+
+    if (REQUIRE_TIEBREAK && tie && tie.value.trim() === '') {
+      problems.push({ text: 'No Monday night tie-breaker', focus: tie, kind: 'tie' });
+    }
+    if (REQUIRE_SUICIDE && suicide &&
+        (suicide.value === '' || suicide.value === 'Select One')) {
+      problems.push({ text: 'No suicide pick', focus: suicide, kind: 'suicide' });
+    }
+
+    return { problems: problems, seen: seen };
+  }
+
+  /* ---- paint ------------------------------------------------------------ */
+  function paint(result, showPanel) {
+    var problems = result.problems, seen = result.seen;
+
+    rows.forEach(function (r) {
+      r.el.classList.remove('has-error');
+      r.el.classList.toggle('picked', r.winner.some(function (b) { return b.checked; }));
+      if (r.pts) {
+        r.pts.classList.remove('bad');
+        r.pts.setAttribute('aria-invalid', 'false');
+      }
+    });
+
+    if (live) {
+      problems.forEach(function (p) {
+        var hit = p.rows || (p.row ? [p.row] : []);
+        hit.forEach(function (r) {
+          r.el.classList.add('has-error');
+          if (p.kind !== 'pick' && r.pts) {
+            r.pts.classList.add('bad');
+            r.pts.setAttribute('aria-invalid', 'true');
+          }
+        });
+      });
+    }
+
+    var used = 0;
+    chips.forEach(function (chip) {
+      var n = chip.getAttribute('data-n');
+      var hits = seen[n] ? seen[n].length : 0;
+      chip.classList.toggle('used', hits === 1);
+      chip.classList.toggle('dup', hits > 1);
+      if (hits) { used++; }
+    });
+
+    if (status) {
+      var picked = rows.filter(function (r) {
+        return r.winner.some(function (b) { return b.checked; });
+      }).length;
+      var bits = [picked + ' of ' + rows.length + ' picked'];
+
+      if (RANKED) {
+        bits.push(used + ' of ' + chips.length + ' points used');
+      } else {
+        var extra = rows.filter(function (r) {
+          return r.names.some(function (nm) {
+            return !/^gm/.test(nm) &&
+                   r.groups[nm].some(function (b) { return b.checked; });
+          });
+        }).length;
+        var anyExtra = rows.some(function (r) {
+          return r.names.some(function (nm) { return !/^gm/.test(nm); });
+        });
+        if (anyExtra) { bits.push(extra + ' of ' + rows.length + ' over/unders'); }
+      }
+      status.textContent = bits.join(' \u00B7 ');
+      status.classList.toggle('warn', live && problems.length > 0);
+    }
+
+    if (!panel) { return; }
+    if (!showPanel || !problems.length) {
+      panel.hidden = true;
+      panel.innerHTML = '';
+      return;
+    }
+
+    var head = document.createElement('h2');
+    head.textContent = problems.length === 1
+      ? 'One thing to fix before this posts'
+      : problems.length + ' things to fix before this posts';
+
+    var list = document.createElement('ul');
+    problems.forEach(function (p) {
+      var li = document.createElement('li');
+      var jump = document.createElement('button');
+      jump.type = 'button';
+      jump.className = 'jump';
+      jump.textContent = p.text;
+      jump.addEventListener('click', function () { go(p.focus); });
+      li.appendChild(jump);
+      list.appendChild(li);
+    });
+
+    panel.innerHTML = '';
+    panel.appendChild(head);
+    panel.appendChild(list);
+    panel.hidden = false;
+  }
+
+  function go(el) {
+    if (!el) { return; }
+    if (el.scrollIntoView) {
+      el.scrollIntoView({ block: 'center', behavior: smooth ? 'smooth' : 'auto' });
+    }
+    try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+  }
+
+  /* ---- wire up ----------------------------------------------------------- */
+  form.addEventListener('submit', function (e) {
+    var result = check();
+    if (!result.problems.length) { return; }   // let it post
+    e.preventDefault();
+    live = true;
+    paint(result, true);
+    if (panel) {
+      panel.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' });
+      panel.focus();
+    }
+  });
+
+  function refresh() { paint(check(), live); }
+  form.addEventListener('input', refresh);
+  form.addEventListener('change', refresh);
+
+  /* Enter must not post the form, as on the original page. */
+  form.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
+      e.preventDefault();
+    }
+  });
+
+  /* Crap Shoot posts unchecked — the program fills the card. */
+  if (shoot) {
+    shoot.addEventListener('click', function () {
+      if (craps) { craps.value = 'yes'; }
+      form.submit();
+    });
+  }
+
+  paint(check(), false);
+}());
+
+</script>
+</body>
+</html>
