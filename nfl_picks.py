@@ -658,6 +658,13 @@ def parse_args() -> argparse.Namespace:
         "--suicide-team",
         help="Team to select for the suicide pick (defaults to highest confidence pick)",
     )
+    parser.add_argument(
+        "--tie-breaker",
+        "--tiebreaker",
+        type=int,
+        dest="tie_breaker",
+        help="Custom total points for Monday tie-breaker",
+    )
     return parser.parse_args()
 
 
@@ -772,7 +779,7 @@ def parse_games(
         start_utc = dt.datetime.fromisoformat(date_str.replace("Z", "+00:00")).astimezone(UTC_TZ)
         start_et = start_utc.astimezone(ET_TZ)
 
-        if start_et.weekday() == 3:  # Thursday
+        if start_et.weekday() in {1, 2, 3, 4}:  # Skip Tue, Wed, Thu, Fri (pre-weekend games)
             continue
 
         competitors = comp.get("competitors", [])
@@ -1561,8 +1568,10 @@ def merge_secondary_odds(
     """Return a lookup where primary entries gain values (spread/total) from secondary_lookup when missing."""
     if not secondary_lookup:
         return primary_lookup
+    if not primary_lookup:
+        return secondary_lookup
 
-    merged: Dict[Tuple[str, str], GameOdds] = {}
+    merged: Dict[Tuple[str, str], GameOdds] = dict(secondary_lookup)
     for key, odds in primary_lookup.items():
         over_under_value = odds.over_under
         spread_value = odds.spread
@@ -1578,6 +1587,7 @@ def merge_secondary_odds(
             if spread_value == 0.0 and secondary_odds.spread != 0.0:
                 spread_value = secondary_odds.spread
 
+        merged.pop(swapped, None)
         merged[key] = GameOdds(
             spread=spread_value,
             over_under=over_under_value,
@@ -1783,6 +1793,12 @@ def parse_existing_picks_html(html: str) -> ExistingSubmission:
                 if val and val != "Select One":
                     suicide_pick = val
                     break
+        if not suicide_pick:
+            options = suicide_select.find_all("option")
+            if options:
+                first_val = options[0].get("value") or options[0].get_text(strip=True)
+                if first_val and first_val.strip() != "Select One":
+                    suicide_pick = first_val.strip()
 
     return ExistingSubmission(
         picks=list(results.values()),
@@ -1806,6 +1822,97 @@ def fetch_existing_submission(
     response = session.get(MAKE_WEEK_URL, params=params, timeout=15)
     response.raise_for_status()
     return parse_existing_picks_html(response.text)
+
+
+def extract_card_matchups_from_html(html: str) -> List[Tuple[str, str]]:
+    """Extract (visitor, home) pairs for each game on the make_week card."""
+    soup = BeautifulSoup(html, "html.parser")
+    matchups: List[Tuple[str, str]] = []
+
+    game_elements = soup.find_all(class_=re.compile(r"\bgame\b"))
+    if game_elements:
+        for game in game_elements:
+            vis_name = ""
+            home_name = ""
+            team_labels = game.select("label.team")
+            for t in team_labels:
+                side_el = t.select_one(".side")
+                name_el = t.select_one(".name")
+                side_text = side_el.get_text(strip=True).lower() if side_el else ""
+                t_name = name_el.get_text(strip=True) if name_el else ""
+                if "visitor" in side_text or "away" in side_text:
+                    vis_name = t_name
+                elif "home" in side_text:
+                    home_name = t_name
+
+            if not vis_name or not home_name:
+                matchup = game.get("data-matchup") or ""
+                parts = matchup.split(" at ")
+                if len(parts) == 2:
+                    vis_name = vis_name or parts[0].strip()
+                    home_name = home_name or parts[1].strip()
+
+            if vis_name and home_name:
+                matchups.append((vis_name, home_name))
+    else:
+        for row in soup.find_all("tr"):
+            radios = row.find_all("input", attrs={"type": "radio"})
+            if len(radios) < 2:
+                continue
+
+            def extract_team(radio_tag: Any) -> str:
+                cell = radio_tag.find_parent("td")
+                if not cell:
+                    return ""
+                row_el = cell.find_parent("tr")
+                if not row_el:
+                    return ""
+                cells = row_el.find_all("td")
+                try:
+                    idx = cells.index(cell)
+                except ValueError:
+                    return ""
+
+                for pos in range(idx + 1, len(cells)):
+                    candidate = cells[pos]
+                    text = candidate.get_text(strip=True)
+                    classes = candidate.get("class") or []
+                    if text and "lineitem" in classes:
+                        return text
+                for pos in range(idx + 1, len(cells)):
+                    candidate = cells[pos]
+                    text = candidate.get_text(strip=True)
+                    if text:
+                        return text
+                return ""
+
+            vis_name = extract_team(radios[0])
+            home_name = extract_team(radios[1])
+            if vis_name and home_name:
+                matchups.append((vis_name, home_name))
+
+    return matchups
+
+
+def fetch_card_matchups(
+    *,
+    session: requests.Session,
+    week: int,
+    login_id: Optional[str] = None,
+    login_key: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    params = {"week": week}
+    if login_id:
+        params["i"] = login_id
+    if login_key:
+        params["k"] = login_key
+    try:
+        response = session.get(MAKE_WEEK_URL, params=params, timeout=15)
+        response.raise_for_status()
+        return extract_card_matchups_from_html(response.text)
+    except Exception as exc:
+        logging.debug("Could not fetch card matchups from site: %s", exc)
+        return []
 
 
 def summarize_existing_comparison(
@@ -2700,11 +2807,44 @@ def main() -> None:
     # ---------------------------------------------------------
     # REGULAR SEASON LOGIC (Weeks 1-18)
     # ---------------------------------------------------------
+    login_id = args.login_id or os.environ.get("FTN_USER_ID")
+    login_key = args.login_key or os.environ.get("FTN_KEY")
+
+    card_matchups = fetch_card_matchups(
+        session=session,
+        week=args.week,
+        login_id=login_id,
+        login_key=login_key,
+    )
+
     scoreboard = fetch_json(
         SCOREBOARD_URL,
         params={"dates": season, "seasontype": 2, "week": args.week},
         session=session,
     )
+
+    if card_matchups:
+        logging.info("Filtering ESPN events to match %d card games on make_week.", len(card_matchups))
+        filtered_events = []
+        for ev in scoreboard.get("events", []):
+            comp = ev.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+            away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+            if not home or not away:
+                continue
+            h_aliases = set(generate_team_aliases(home["team"]))
+            a_aliases = set(generate_team_aliases(away["team"]))
+            matched = False
+            for vis_c, home_c in card_matchups:
+                vis_norm = canonicalize_label(vis_c)
+                home_norm = canonicalize_label(home_c)
+                if (vis_norm in a_aliases and home_norm in h_aliases) or (vis_norm in h_aliases and home_norm in a_aliases):
+                    matched = True
+                    break
+            if matched:
+                filtered_events.append(ev)
+        scoreboard["events"] = filtered_events
 
     events_info = collect_scoreboard_events(scoreboard)
 
@@ -2866,8 +3006,16 @@ def main() -> None:
         logging.info("Using custom Monday tie-breaker total: %s", tie_breaker_override)
 
     final_tie_breaker = (
-        tie_breaker_override if tie_breaker_override is not None else monday_summary.computed_pick
+        tie_breaker_override
+        if tie_breaker_override is not None
+        else (args.tie_breaker if args.tie_breaker is not None else monday_summary.computed_pick)
     )
+    if final_tie_breaker is None:
+        if monday_summary.combined_total is not None:
+            final_tie_breaker = round_half_up(monday_summary.combined_total)
+        else:
+            final_tie_breaker = 45
+            logging.warning("No Monday tie-breaker total available; defaulting to %s.", final_tie_breaker)
     final_suicide = (
         suicide_override or args.suicide_team or (picks[0].selected_team.get("displayName") if picks else None)
     )

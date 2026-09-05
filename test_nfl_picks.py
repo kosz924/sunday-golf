@@ -124,5 +124,20 @@ class TestNewWebsiteLayout(unittest.TestCase):
         self.assertIn("Suicide pick:", comp_diff)
         self.assertIn("Site has Buffalo, script selects Miami", comp_diff)
 
+    def test_extract_card_matchups(self):
+        from nfl_picks import extract_card_matchups_from_html
+        matchups = extract_card_matchups_from_html(self.sample_html)
+        self.assertEqual(len(matchups), 14)
+        self.assertEqual(matchups[0], ("Carolina", "Chicago"))
+        self.assertEqual(matchups[-1], ("Kansas City", "Denver"))
+
+    def test_merge_secondary_odds_fallback(self):
+        from nfl_picks import merge_secondary_odds
+        sec = {("kc", "den"): GameOdds(spread=-5.5, over_under=43.5, provider="fanduel", favorite_side="home")}
+        merged = merge_secondary_odds({}, sec)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[("kc", "den")].over_under, 43.5)
+        self.assertEqual(merged[("kc", "den")].spread, -5.5)
+
 if __name__ == "__main__":
     unittest.main()
