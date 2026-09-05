@@ -3,20 +3,23 @@ name: Weekly NFL Picks
 on:
   workflow_dispatch:
     inputs:
-      ignore_start_gate:
-        description: "Set to true to bypass the start-date gate (for manual tests)"
+      week:
+        description: "NFL Week number to run (leave blank to auto-detect)"
         required: false
-        default: "false"
-  #schedule:
-    # 8:00 AM US/Eastern every Saturday
-    #- cron: "0 13 * * 6"
-      #timezone: "America/New_York"
+        default: ""
+      season:
+        description: "Season year (defaults to 2026)"
+        required: false
+        default: "2026"
+  schedule:
+    # 8:00 AM US/Eastern every Saturday (12:00 UTC during EDT)
+    - cron: "0 12 * * 6"
 
 jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      SEASON: "2025"
+      SEASON: ${{ github.event.inputs.season || '2026' }}
       FTN_USER_ID: ${{ secrets.FTN_USER_ID }}
       FTN_PASSWORD: ${{ secrets.FTN_PASSWORD }}
       FTN_KEY: ${{ secrets.FTN_KEY }}
@@ -30,48 +33,28 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Gate until 2025-12-05 08:00 ET
-        id: gate
-        env:
-          IGNORE_START_GATE: ${{ github.event.inputs.ignore_start_gate || 'false' }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-        run: |
-          python - <<'PY'
-          import datetime as dt, zoneinfo, os
-          ET = zoneinfo.ZoneInfo("America/New_York")
-          now = dt.datetime.now(ET)
-          start = dt.datetime(2025, 12, 5, 8, 0, tzinfo=ET)
-          ignore = os.environ.get("IGNORE_START_GATE", "").lower() == "true"
-          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-
-          if event_name == "schedule" and (now < start) and not ignore:
-              skip = True
-              reason = f"Not time yet (now {now}); scheduled runs begin at {start}."
-          else:
-              skip = False
-              reason = f"Proceeding (ignore_start_gate={ignore}, event={event_name}, now={now})."
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"skip={str(skip).lower()}\n")
-          print(f"::notice::{reason}")
-          PY
-
       - name: Install dependencies
-        if: steps.gate.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Determine upcoming week
-        if: steps.gate.outputs.skip != 'true'
         id: week
+        env:
+          INPUT_WEEK: ${{ github.event.inputs.week }}
         run: |
           python - <<'PY'
-          import os
-          import requests
+          import os, requests
+
+          manual_week = os.environ.get("INPUT_WEEK", "").strip()
+          if manual_week:
+              print(f"Using manually specified week: {manual_week}")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"week={manual_week}\n")
+              exit(0)
 
           SCOREBOARD_URL = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-          season = int(os.environ.get("SEASON", "2025"))
+          season = int(os.environ.get("SEASON", "2026"))
           next_week = None
           
           # 1. Check Regular Season (Weeks 1-18)
@@ -101,7 +84,6 @@ jobs:
                   break
           
           # 2. Check Postseason (Weeks 1-5) if no regular season week found
-          # Postseason Week 1 = Script Week 19
           if next_week is None:
               print("Regular season complete; checking postseason...")
               for wk in range(1, 6):
@@ -139,7 +121,6 @@ jobs:
           PY
 
       - name: Run picks and submit
-        if: steps.gate.outputs.skip != 'true'
         env:
           WDM_LOG_LEVEL: 0
         run: |
