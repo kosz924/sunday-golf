@@ -1446,20 +1446,31 @@ def build_polymarket_lookup(
     if not events_info:
         return {}
 
-    params = {
-        "tag_id": tag_id,
-        "active": "true",
-        "closed": "false",
-        "sort": "volume",
-        "limit": 200,
-    }
-    try:
-        response = session.get("https://gamma-api.polymarket.com/events", params=params, timeout=15)
-        response.raise_for_status()
-        events = response.json()
-    except requests.RequestException as exc:
-        logging.error("Polymarket request failed: %s", exc)
-        raise
+    events: List[Dict[str, Any]] = []
+    offset = 0
+    max_pages = 8  # up to 800 events (covers all active NFL markets)
+    for _ in range(max_pages):
+        params = {
+            "tag_slug": "nfl",
+            "active": "true",
+            "closed": "false",
+            "limit": 100,
+            "offset": offset,
+        }
+        try:
+            response = session.get("https://gamma-api.polymarket.com/events", params=params, timeout=15)
+            response.raise_for_status()
+            batch = response.json()
+        except requests.RequestException as exc:
+            logging.error("Polymarket request failed: %s", exc)
+            raise
+
+        if not batch:
+            break
+        events.extend(batch)
+        offset += len(batch)
+        if len(batch) < 100:
+            break
 
     def parse_list(value: Any) -> List[Any]:
         if isinstance(value, list):
